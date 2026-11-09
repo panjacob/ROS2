@@ -1,0 +1,84 @@
+# Diagnostic config only: steps/mm are provisional, not machine calibration.
+# 5 axes on MKS TinyBee: X, Y, Z, A (E0 socket), B (E1 socket).
+board: MKS TinyBee V1.0
+name: TinyBee XYZAB diagnostic
+stepping:
+  engine: I2S_STATIC
+  idle_ms: 250
+  pulse_us: 4
+  dir_delay_us: 1
+  disable_delay_us: 1
+i2so:
+  bck_pin: gpio.25
+  data_pin: gpio.27
+  ws_pin: gpio.26
+kinematics:
+  Cartesian:
+axes:
+  x:
+    steps_per_mm: 17.778   # 200 full steps x 32 microsteps = 6400 steps/rev / 360 deg (direct drive, no gearbox)
+    max_rate_mm_per_min: 21600   # deg/min = 360 deg/s (6400 steps/s)
+    acceleration_mm_per_sec2: 3000   # deg/s^2
+    max_travel_mm: 100
+    soft_limits: false
+    motor0:
+      # Joint 1 endstop on X-MIN. One switch, hit from both sides of the ~360 deg travel.
+      # hard_limits off: the switch is only reported in Pn; the ROS bridge does the homing.
+      # Wired normally-closed (switch C + NC to X_STOP S + G): pin is low when released and goes
+      # high when pressed (or if a wire breaks = fail-safe), so it is active-high.
+      limit_all_pin: gpio.33
+      hard_limits: false
+      stepstick:
+        step_pin: I2SO.1
+        direction_pin: I2SO.2:low
+        disable_pin: I2SO.0
+  y:
+    steps_per_mm: 17.778   # 6400 steps/rev (32x microstepping) / 360 deg, direct drive
+    max_rate_mm_per_min: 21600   # deg/min = 360 deg/s (6400 steps/s)
+    acceleration_mm_per_sec2: 3000   # deg/s^2
+    max_travel_mm: 100
+    soft_limits: false
+    motor0:
+      hard_limits: false
+      stepstick:
+        step_pin: I2SO.4
+        direction_pin: I2SO.5
+        disable_pin: I2SO.3
+  z:
+    steps_per_mm: 17.778   # 6400 steps/rev (32x microstepping) / 360 deg, direct drive
+    max_rate_mm_per_min: 21600   # deg/min = 360 deg/s (6400 steps/s)
+    acceleration_mm_per_sec2: 3000   # deg/s^2
+    max_travel_mm: 100
+    soft_limits: false
+    motor0:
+      hard_limits: false
+      stepstick:
+        step_pin: I2SO.7
+        direction_pin: I2SO.8
+        disable_pin: I2SO.6
+  a:
+    steps_per_mm: 17.778   # 6400 steps/rev (32x microstepping) / 360 deg, direct drive
+    max_rate_mm_per_min: 21600   # deg/min = 360 deg/s (6400 steps/s)
+    acceleration_mm_per_sec2: 3000   # deg/s^2
+    max_travel_mm: 100
+    soft_limits: false
+    motor0:
+      hard_limits: false
+      stepstick:
+        step_pin: I2SO.10
+        direction_pin: I2SO.11
+        disable_pin: I2SO.9
+  b:
+    steps_per_mm: 17.778   # 6400 steps/rev (32x microstepping) / 360 deg, direct drive
+    max_rate_mm_per_min: 21600   # deg/min = 360 deg/s (6400 steps/s)
+    acceleration_mm_per_sec2: 3000   # deg/s^2
+    max_travel_mm: 100
+    soft_limits: false
+    motor0:
+      hard_limits: false
+      stepstick:
+        step_pin: I2SO.13
+        direction_pin: I2SO.14
+        disable_pin: I2SO.12
+start:
+  must_home: false

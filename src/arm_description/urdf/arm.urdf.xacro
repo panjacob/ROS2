@@ -1,0 +1,105 @@
+<?xml version="1.0"?>
+<!--
+  5-DOF 3D printed arm driven by an MKS TinyBee running FluidNC.
+  Placeholder geometry (cylinders/boxes). Replace visuals with meshes from CAD
+  once parts are designed. Keep joint limits in sync with firmware/fluidnc/config.yaml.
+
+  joint1 base yaw     -> FluidNC X
+  joint2 shoulder     -> FluidNC Y
+  joint3 elbow        -> FluidNC Z
+  joint4 wrist pitch  -> FluidNC A
+  joint5 wrist roll   -> FluidNC B
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="printed_arm">
+
+  <!-- Dimensions [m] -->
+  <xacro:property name="base_h"     value="0.080"/>
+  <xacro:property name="base_r"     value="0.070"/>
+  <xacro:property name="shoulder_h" value="0.050"/>
+  <xacro:property name="upper_len"  value="0.200"/>
+  <xacro:property name="fore_len"   value="0.180"/>
+  <xacro:property name="wrist_len"  value="0.060"/>
+  <xacro:property name="flange_len" value="0.030"/>
+  <xacro:property name="link_w"     value="0.045"/>
+
+  <xacro:property name="deg" value="${pi/180.0}"/>
+
+  <material name="pla_grey"><color rgba="0.6 0.6 0.6 1.0"/></material>
+  <material name="pla_orange"><color rgba="0.95 0.45 0.1 1.0"/></material>
+
+  <!-- Rough box inertia so the model can later be used in Gazebo -->
+  <xacro:macro name="box_inertial" params="m x y z oz">
+    <inertial>
+      <origin xyz="0 0 ${oz}"/>
+      <mass value="${m}"/>
+      <inertia ixx="${m*(y*y+z*z)/12}" ixy="0" ixz="0"
+               iyy="${m*(x*x+z*z)/12}" iyz="0"
+               izz="${m*(x*x+y*y)/12}"/>
+    </inertial>
+  </xacro:macro>
+
+  <xacro:macro name="arm_segment" params="name length mat mass">
+    <link name="${name}">
+      <visual>
+        <origin xyz="0 0 ${length/2}"/>
+        <geometry><box size="${link_w} ${link_w} ${length}"/></geometry>
+        <material name="${mat}"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${length/2}"/>
+        <geometry><box size="${link_w} ${link_w} ${length}"/></geometry>
+      </collision>
+      <xacro:box_inertial m="${mass}" x="${link_w}" y="${link_w}" z="${length}" oz="${length/2}"/>
+    </link>
+  </xacro:macro>
+
+  <xacro:macro name="rev_joint" params="name parent child z axis lower upper vel">
+    <joint name="${name}" type="revolute">
+      <parent link="${parent}"/>
+      <child link="${child}"/>
+      <origin xyz="0 0 ${z}" rpy="0 0 0"/>
+      <axis xyz="${axis}"/>
+      <limit lower="${lower}" upper="${upper}" velocity="${vel}" effort="5.0"/>
+    </joint>
+  </xacro:macro>
+
+  <link name="world"/>
+
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 ${base_h/2}"/>
+      <geometry><cylinder radius="${base_r}" length="${base_h}"/></geometry>
+      <material name="pla_grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${base_h/2}"/>
+      <geometry><cylinder radius="${base_r}" length="${base_h}"/></geometry>
+    </collision>
+    <xacro:box_inertial m="1.0" x="${2*base_r}" y="${2*base_r}" z="${base_h}" oz="${base_h/2}"/>
+  </link>
+
+  <joint name="world_to_base" type="fixed">
+    <parent link="world"/>
+    <child link="base_link"/>
+  </joint>
+
+  <xacro:arm_segment name="link1" length="${shoulder_h}" mat="pla_orange" mass="0.30"/>
+  <xacro:arm_segment name="link2" length="${upper_len}"  mat="pla_grey"   mass="0.25"/>
+  <xacro:arm_segment name="link3" length="${fore_len}"   mat="pla_orange" mass="0.20"/>
+  <xacro:arm_segment name="link4" length="${wrist_len}"  mat="pla_grey"   mass="0.10"/>
+  <xacro:arm_segment name="link5" length="${flange_len}" mat="pla_orange" mass="0.05"/>
+
+  <xacro:rev_joint name="joint1" parent="base_link" child="link1" z="${base_h}"     axis="0 0 1" lower="${-170*deg}" upper="${170*deg}" vel="1.0"/>
+  <xacro:rev_joint name="joint2" parent="link1"     child="link2" z="${shoulder_h}" axis="0 1 0" lower="${-90*deg}"  upper="${90*deg}"  vel="0.5"/>
+  <xacro:rev_joint name="joint3" parent="link2"     child="link3" z="${upper_len}"  axis="0 1 0" lower="${-135*deg}" upper="${135*deg}" vel="0.7"/>
+  <xacro:rev_joint name="joint4" parent="link3"     child="link4" z="${fore_len}"   axis="0 1 0" lower="${-100*deg}" upper="${100*deg}" vel="1.0"/>
+  <xacro:rev_joint name="joint5" parent="link4"     child="link5" z="${wrist_len}"  axis="0 0 1" lower="${-180*deg}" upper="${180*deg}" vel="1.0"/>
+
+  <link name="tool0"/>
+  <joint name="link5_to_tool0" type="fixed">
+    <parent link="link5"/>
+    <child link="tool0"/>
+    <origin xyz="0 0 ${flange_len}"/>
+  </joint>
+
+</robot>

@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Arm control</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: system-ui, sans-serif; margin: 1.5em; background: #f4f5f7; color: #222; }
+  h1 { margin: 0 0 .3em; font-size: 1.4em; }
+  h2 { font-size: 1.05em; margin: 0 0 .5em; }
+  .card { background: #fff; border-radius: 8px; padding: 1em; margin-bottom: 1em; box-shadow: 0 1px 3px #0002; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: .35em .6em; border-bottom: 1px solid #eee; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+  button { font-size: 1em; padding: .35em .8em; border-radius: 5px; border: 1px solid #888; background: #fafafa; cursor: pointer; user-select: none; touch-action: none; }
+  button:active { background: #dde; }
+  button.stop { background: #d32; color: #fff; border-color: #a10; font-weight: bold; font-size: 1.2em; padding: .5em 1.6em; }
+  input[type=number] { width: 6em; }
+  .row { display: flex; gap: 1em; align-items: center; flex-wrap: wrap; }
+  .muted { color: #888; }
+  .ok { color: #080; } .bad { color: #c00; } .warn { color: #b60; }
+  #msg { min-height: 1.3em; }
+  .lamp { display: inline-block; padding: .15em .7em; border-radius: 1em; font-weight: bold;
+          background: #ddd; color: #666; min-width: 5.5em; text-align: center; }
+  .lamp.on { background: #e22; color: #fff; box-shadow: 0 0 8px #e22; }
+  .lamp.off { background: #cfc; color: #060; }
+  .bar { position: relative; width: 240px; height: 14px; margin: 4px 0 2px; border-radius: 7px;
+         background: linear-gradient(90deg, #f6d5d5, #eef 25%, #eef 75%, #f6d5d5); border: 1px solid #ccd; }
+  .bar .mid { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: #556; }
+  .bar .dot { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%;
+              background: #27c; border: 1px solid #fff; box-shadow: 0 0 3px #0008; transition: left .1s linear; }
+  .bar .dot.out { background: #e22; }
+  .bar .dot.none { display: none; }
+  .scale { display: flex; justify-content: space-between; width: 240px; font-size: .75em; color: #888; }
+</style>
+</head>
+<body>
+<div class="row">
+  <h1>Arm control</h1>
+  <button class="stop" onclick="post('/api/stop', {})">STOP</button>
+  <button onclick="post('/api/unlock', {})">Unlock alarm</button>
+  <span id="conn" class="muted">connecting…</span>
+</div>
+<p id="msg"></p>
+
+<div class="card">
+  <h2>Bridge</h2>
+  <div class="row">
+    <span>State: <b id="mstate">–</b></span>
+    <span>Limit pins: <b id="pins">–</b></span>
+    <span>Feed: <b id="feed">–</b></span>
+    <span>Homing: <b id="homing">–</b></span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Endstops</h2>
+  <div class="row" id="endstops"><span class="muted">–</span></div>
+</div>
+
+<div class="card">
+  <h2>Joints</h2>
+  <div class="row" style="margin-bottom:.5em">
+    <label>Jog speed <input id="speed" type="range" min="1" max="360" value="120"
+      oninput="speedLbl.textContent=this.value"> <span id="speedLbl">120</span> °/s</label>
+    <span class="muted">hold − / + to move</span>
+  </div>
+  <table>
+    <thead><tr><th>Joint</th><th>Position [°]</th><th>Range</th><th>Jog</th><th>Go to [°]</th><th>Home</th></tr></thead>
+    <tbody id="joints"></tbody>
+  </table>
+  <p class="muted" id="age"></p>
+</div>
+
+<div class="card">
+  <h2>Gamepad</h2>
+  <p id="padinfo" class="muted">–</p>
+  <p class="muted">Left stick X → joint1, left stick Y → joint2, right stick Y → joint3,
+    right stick X → joint4, LB/RB → joint5, B → STOP.</p>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let config = {home_joints: [], max_jog_speed: 360};
+const RANGE = 180;  // bar spans -RANGE..+RANGE degrees (360° total)
+let rowsBuilt = '';
+let jogTimer = null;
+
+function show(text, cls) { const m = $('msg'); m.textContent = text; m.className = cls || ''; }
+
+async function post(path, body) {
+  try {
+    const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                 body: JSON.stringify(body)});
+    const j = await r.json();
+    if (path !== '/api/jog' && path !== '/api/joy') show(j.message, j.ok ? 'ok' : 'bad');
+    else if (!j.ok) show(j.message, 'bad');
+    return j;
+  } catch (e) { show('request failed: ' + e, 'bad'); }
+}
+
+function startJog(joint, dir) {
+  stopJog();
+  const send = () => post('/api/jog', {[joint]: dir * Number($('speed').value)});
+  send();
+  jogTimer = setInterval(send, 100);
+  jogTimer.joint = joint;
+}
+function stopJog() {
+  if (jogTimer) { clearInterval(jogTimer); post('/api/jog', {[jogTimer.joint]: 0}); jogTimer = null; }
+}
+window.addEventListener('pointerup', stopJog);
+window.addEventListener('blur', stopJog);
+
+function goTo(joint) {
+  const v = $('goto_' + joint).value;
+  if (v === '') return;
+  post('/api/goto', {[joint]: Number(v)});
+}
+
+function home(joint) {
+  if (confirm(`Home ${joint}? It will turn left until the endstop, then right until the endstop.`))
+    post('/api/home', {joint});
+}
+
+function buildRows(names) {
+  const key = names.join(',') + '|' + config.home_joints.join(',');
+  if (key === rowsBuilt) return;
+  rowsBuilt = key;
+  $('joints').innerHTML = names.map(n => `
+    <tr><td>${n}</td><td class="num" id="pos_${n}">–</td>
+      <td><div class="bar"><div class="mid"></div><div class="dot none" id="dot_${n}"></div></div>
+          <div class="scale"><span>-${RANGE}°</span><span>0°</span><span>+${RANGE}°</span></div></td>
+      <td><button onpointerdown="startJog('${n}',-1)">−</button>
+          <button onpointerdown="startJog('${n}',1)">+</button></td>
+      <td><input type="number" step="1" id="goto_${n}"> <button onclick="goTo('${n}')">Go</button></td>
+      <td>${config.home_joints.includes(n) ? `<button onclick="home('${n}')">Home</button>` : ''}</td></tr>`).join('');
+}
+
+async function poll() {
+  try {
+    const s = await (await fetch('/state')).json();
+    config = s.config;
+    if (config.max_jog_speed && $('speed').max != config.max_jog_speed) $('speed').max = config.max_jog_speed;
+    $('conn').textContent = 'connected'; $('conn').className = 'ok';
+    const names = Object.keys(s.joints).sort();
+    buildRows(names);
+    for (const n of names) {
+      const d = s.joints[n].position_deg;
+      $('pos_' + n).textContent = d == null ? '–' : d.toFixed(2);
+      const dot = $('dot_' + n);
+      if (d == null) { dot.className = 'dot none'; continue; }
+      const c = Math.max(-RANGE, Math.min(RANGE, d));
+      dot.style.left = (50 + 50 * c / RANGE) + '%';
+      dot.className = Math.abs(d) > RANGE ? 'dot out' : 'dot';
+      dot.title = d.toFixed(2) + '°';
+    }
+    $('age').textContent = s.joints_age == null ? 'no joint_states yet'
+      : `joint_states age ${s.joints_age.toFixed(2)} s`;
+    const st = k => s.status[k] ? s.status[k].value : '–';
+    const ms = st('machine_state');
+    $('mstate').textContent = ms;
+    $('mstate').className = /Alarm/.test(ms) ? 'bad' : (ms === 'Idle' ? 'ok' : 'warn');
+    const pins = s.status.limit_switches ? s.status.limit_switches.value : null;
+    $('pins').textContent = pins === null ? '–' : (pins || 'none');
+    const es = config.endstops || {};
+    $('endstops').innerHTML = Object.keys(es).length === 0 ? '<span class="muted">none configured</span>'
+      : Object.entries(es).map(([j, p]) => {
+          const cls = pins === null ? '' : (pins.includes(p) ? 'on' : 'off');
+          const txt = pins === null ? 'no data' : (pins.includes(p) ? 'PRESSED' : 'released');
+          return `<span>${j} (pin ${p}): <span class="lamp ${cls}">${txt}</span></span>`;
+        }).join('');
+    const f = st('feed_rate'); $('feed').textContent = typeof f === 'number' ? f.toFixed(0) : f;
+    $('homing').textContent = st('homing_status');
+  } catch (e) {
+    $('conn').textContent = 'disconnected'; $('conn').className = 'bad';
+  }
+}
+setInterval(poll, 200);
+poll();
+
+// --- Gamepad: browser reads it (Windows driver) and forwards to ROS /joy ---
+let padActive = false;
+function padLoop() {
+  const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
+  // Prefer a real pad with the standard (Xbox-style) layout over virtual devices like vJoy.
+  const pad = pads.find(p => p.mapping === 'standard' && !/vjoy/i.test(p.id))
+           || pads.find(p => !/vjoy/i.test(p.id)) || pads[0];
+  if (!pad) {
+    $('padinfo').textContent = 'No gamepad detected – press a button on it while this page is focused.';
+  } else {
+    $('padinfo').textContent = `${pad.id} → /joy (mapping: ${pad.mapping || 'non-standard!'})`;
+    const axes = pad.axes.map(a => Math.round(a * 1000) / 1000);
+    const buttons = pad.buttons.map(b => b.pressed ? 1 : 0);
+    if (document.hasFocus()) { post('/api/joy', {axes, buttons}); padActive = true; }
+    else if (padActive) { post('/api/joy', {axes: axes.map(() => 0), buttons: buttons.map(() => 0)}); padActive = false; }
+  }
+}
+setInterval(padLoop, 50);
+</script>
+</body>
+</html>

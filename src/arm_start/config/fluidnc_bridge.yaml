@@ -1,0 +1,33 @@
+fluidnc_bridge:
+  ros__parameters:
+    # "serial" (USB cable) or "tcp" (FluidNC Wi-Fi telnet server)
+    transport: serial
+    serial_port: /dev/ttyUSB0
+    baud: 115200
+    host: fluidnc.local
+    tcp_port: 23
+
+    # Order must match. FluidNC axis units are degrees.
+    joint_names: [joint1, joint2, joint3, joint4, joint5]
+    axis_letters: ["X", "Y", "Z", "A", "B"]  # quoted: bare Y is read as boolean "yes"
+
+    # deg/min, upper bound for any move (FluidNC also enforces per-axis max_rate)
+    max_feed: 21600.0
+    status_rate: 10.0
+    ack_timeout: 10.0
+    homing_timeout: 120.0
+
+    # Velocity jog (topic "jog"): segments sent at jog_rate, stop after jog_timeout s without messages
+    jog_rate: 20.0
+    jog_timeout: 0.3
+    jog_lookahead: 0.25   # s of motion queued ahead in FluidNC
+    max_jog_speed: 360.0  # deg/s per joint
+
+    # Endstop homing (service ~/home_<joint>): one switch hit from both ends of travel.
+    # Seek left (negative) to the switch, then right to the switch; the middle becomes 0 deg.
+    homing_joints: ["joint1"]
+    homing_pins: ["X"]          # letter FluidNC reports in Pn for that joint's switch
+    homing_seek_speed: 90.0     # deg/s, fast search
+    homing_locate_speed: 10.0   # deg/s, slow second touch for accuracy
+    homing_backoff: 5.0         # deg moved off the switch before the slow touch
+    homing_max_travel: 400.0    # deg, give up if no switch within this
