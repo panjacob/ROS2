@@ -102,6 +102,16 @@ http://localhost:8080 (from Windows too).
 
 - STOP / Unlock alarm, hold − / + to jog a joint, "Go" to move to an angle, "Home" for `homing_joints`.
 - "Range" bar per joint: −180° … 0 … +180°, the dot shows the current position (red and pinned to the end if outside).
+- TCP position: the panel reads the `world` → `tool0` transform from TF and displays
+  the origin of `tool0` in world coordinates (X/Y/Z in millimetres). It marks the
+  position unavailable if joint states or the transform become stale. The web node's
+  `reference_frame` parameter changes the reference frame.
+- Named TCPs: use the TCP card to add a name and X/Y/Z offsets in millimetres plus
+  roll/pitch/yaw in degrees relative to `tool0`. Each saved TCP has a
+  `tcp_<name>` frame under `tool0`; selecting one displays its pose in `world`.
+  Definitions and the selection persist in `~/.config/ros2_arm/tcps.json`; override
+  the path with the `tcp_storage_path` launch argument. The built-in `tool0` is the
+  zero-offset TCP and cannot be edited or deleted.
 - Gamepad: the browser reads it (Gamepad API, so Windows drivers work – WSL has no gamepad driver)
   and POSTs it to `/api/joy` → `/joy` → `joy_teleop` → `/jog`. Always on when a pad is connected
   (a real pad with the standard layout is preferred over virtual ones like vJoy),

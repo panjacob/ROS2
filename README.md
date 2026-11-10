@@ -39,7 +39,7 @@ source install/setup.bash
 # 1. Preview the mesh model with joint sliders
 ros2 launch arm_description display.launch.py
 
-# 2. Joint simulation; use Go/jog/gamepad at http://localhost:8080 and watch RViz
+# 2. Joint simulation; use Go/jog/gamepad and manage TCPs at http://localhost:8080
 ros2 launch arm_start arm.launch.py
 
 # Optional: select the original primitive model instead

@@ -32,6 +32,12 @@
   .bar .dot.out { background: #e22; }
   .bar .dot.none { display: none; }
   .scale { display: flex; justify-content: space-between; width: 240px; font-size: .75em; color: #888; }
+  .tcp-values { display: flex; gap: 2em; flex-wrap: wrap; margin: .6em 0; }
+  .tcp-values b { font-variant-numeric: tabular-nums; font-size: 1.3em; }
+  .tcp-editor { display: flex; gap: .7em; flex-wrap: wrap; align-items: end; margin-top: 1em; }
+  .tcp-editor label { display: flex; flex-direction: column; gap: .2em; font-size: .9em; }
+  .tcp-editor input { width: 6.3em; }
+  .tcp-editor input#tcpName { width: 10em; }
 </style>
 </head>
 <body>
@@ -56,6 +62,39 @@
 <div class="card" id="endstopsCard">
   <h2>Endstops</h2>
   <div class="row" id="endstops"><span class="muted">–</span></div>
+</div>
+
+<div class="card">
+  <h2>TCP position</h2>
+  <span class="muted" id="tcpFrames">world → tool0, origin (0, 0, 0) of tool0</span>
+  <p class="muted">Position and orientation in the reference frame:</p>
+  <div class="tcp-values">
+    <span>X: <b id="tcpX">–</b> mm</span>
+    <span>Y: <b id="tcpY">–</b> mm</span>
+    <span>Z: <b id="tcpZ">–</b> mm</span>
+  </div>
+  <div class="tcp-values">
+    <span>Roll: <b id="tcpWorldRoll">–</b>°</span>
+    <span>Pitch: <b id="tcpWorldPitch">–</b>°</span>
+    <span>Yaw: <b id="tcpWorldYaw">–</b>°</span>
+  </div>
+  <span class="muted" id="tcpStatus">Waiting for TF</span>
+  <div class="row" style="margin-top:1em">
+    <label>Active TCP <select id="tcpSelect" onchange="selectTcp(this.value)"></select></label>
+    <button onclick="newTcp()">New TCP</button>
+    <button id="tcpDelete" onclick="deleteTcp()">Delete selected</button>
+  </div>
+  <div class="tcp-editor">
+    <label>Name <input id="tcpName" placeholder="gripper_tip" maxlength="32"></label>
+    <label>X [mm] <input id="tcpOffsetX" type="number" step="0.1" value="0"></label>
+    <label>Y [mm] <input id="tcpOffsetY" type="number" step="0.1" value="0"></label>
+    <label>Z [mm] <input id="tcpOffsetZ" type="number" step="0.1" value="0"></label>
+    <label>Roll [°] <input id="tcpRoll" type="number" step="0.1" value="0"></label>
+    <label>Pitch [°] <input id="tcpPitch" type="number" step="0.1" value="0"></label>
+    <label>Yaw [°] <input id="tcpYaw" type="number" step="0.1" value="0"></label>
+    <button id="tcpSave" onclick="saveTcp()">Save and select</button>
+  </div>
+  <p class="muted">Offsets and rotation are relative to tool0. Names: letters, numbers, _ or -.</p>
 </div>
 
 <div class="card">
@@ -85,6 +124,7 @@ let config = {home_joints: [], max_jog_speed: 360};
 const RANGE = 180;  // bar spans -RANGE..+RANGE degrees (360° total)
 let rowsBuilt = '';
 let jogTimer = null;
+let tcpUiKey = '';
 
 function show(text, cls) { const m = $('msg'); m.textContent = text; m.className = cls || ''; }
 
@@ -123,6 +163,73 @@ function home(joint) {
     post('/api/home', {joint});
 }
 
+function loadTcpEditor(tcp) {
+  $('tcpName').value = tcp.name;
+  for (const [index, axis] of ['X', 'Y', 'Z'].entries())
+    $('tcpOffset' + axis).value = (tcp.xyz_m[index] * 1000).toFixed(1);
+  for (const [index, axis] of ['Roll', 'Pitch', 'Yaw'].entries())
+    $('tcp' + axis).value = tcp.rpy_deg[index].toFixed(1);
+  const origin = tcp.name === 'tool0';
+  $('tcpName').disabled = origin;
+  $('tcpSave').disabled = origin;
+  $('tcpDelete').disabled = origin;
+}
+
+function updateTcpControls() {
+  const key = JSON.stringify([config.selected_tcp, config.tcps]);
+  if (key === tcpUiKey) return;
+  tcpUiKey = key;
+  const select = $('tcpSelect');
+  select.replaceChildren();
+  for (const tcp of config.tcps || []) {
+    const option = document.createElement('option');
+    option.value = tcp.name;
+    option.textContent = tcp.name;
+    select.append(option);
+  }
+  select.value = config.selected_tcp;
+  const active = (config.tcps || []).find(tcp => tcp.name === config.selected_tcp);
+  if (active) loadTcpEditor(active);
+}
+
+async function selectTcp(name) {
+  const result = await post('/api/tcp/select', {name});
+  if (result?.ok) {
+    const active = config.tcps.find(tcp => tcp.name === name);
+    if (active) loadTcpEditor(active);
+  }
+}
+
+function newTcp() {
+  $('tcpName').disabled = false;
+  $('tcpName').value = '';
+  for (const id of ['tcpOffsetX', 'tcpOffsetY', 'tcpOffsetZ', 'tcpRoll', 'tcpPitch', 'tcpYaw'])
+    $(id).value = '0';
+  $('tcpSave').disabled = false;
+  $('tcpName').focus();
+}
+
+async function saveTcp() {
+  const fields = ['tcpOffsetX', 'tcpOffsetY', 'tcpOffsetZ', 'tcpRoll', 'tcpPitch', 'tcpYaw'];
+  if (fields.some(id => $(id).value.trim() === '' || !Number.isFinite(Number($(id).value)))) {
+    show('Enter finite TCP offsets and angles.', 'bad');
+    return;
+  }
+  await post('/api/tcp/save', {
+    name: $('tcpName').value.trim(),
+    x_mm: Number($('tcpOffsetX').value), y_mm: Number($('tcpOffsetY').value),
+    z_mm: Number($('tcpOffsetZ').value),
+    roll_deg: Number($('tcpRoll').value), pitch_deg: Number($('tcpPitch').value),
+    yaw_deg: Number($('tcpYaw').value),
+  });
+}
+
+async function deleteTcp() {
+  const name = $('tcpSelect').value;
+  if (name === 'tool0' || !confirm(`Delete TCP ${name}?`)) return;
+  await post('/api/tcp/delete', {name});
+}
+
 function buildRows(names) {
   const key = names.join(',') + '|' + config.home_joints.join(',');
   if (key === rowsBuilt) return;
@@ -141,6 +248,7 @@ async function poll() {
   try {
     const s = await (await fetch('/state')).json();
     config = s.config;
+    updateTcpControls();
     $('controllerTitle').textContent = config.simulation ? 'Simulation' : 'Bridge';
     $('unlock').hidden = !!config.simulation;
     $('endstopsCard').hidden = !!config.simulation;
@@ -160,6 +268,19 @@ async function poll() {
     }
     $('age').textContent = s.joints_age == null ? 'no joint_states yet'
       : `joint_states age ${s.joints_age.toFixed(2)} s`;
+    $('tcpFrames').textContent = `${config.reference_frame} → ${config.selected_tcp} (${config.tcp_frame})`;
+    const tcp = s.tcp;
+    const tcpFresh = tcp && tcp.frame === config.tcp_frame && tcp.age < 2
+      && s.joints_age != null && s.joints_age < 2 && !s.tcp_error;
+    for (const axis of ['x', 'y', 'z']) {
+      $('tcp' + axis.toUpperCase()).textContent = tcpFresh
+        ? (tcp.position_m[axis] * 1000).toFixed(1) : '–';
+    }
+    for (const [index, axis] of ['Roll', 'Pitch', 'Yaw'].entries())
+      $('tcpWorld' + axis).textContent = tcpFresh ? tcp.rpy_deg[index].toFixed(1) : '–';
+    $('tcpStatus').textContent = tcpFresh ? `TF age ${tcp.age.toFixed(2)} s`
+      : (s.tcp_error ? 'Waiting for TF' : 'TCP position is stale');
+    $('tcpStatus').className = tcpFresh ? 'muted' : 'warn';
     const st = k => s.status[k] ? s.status[k].value : '–';
     const ms = st('machine_state');
     $('mstate').textContent = ms;

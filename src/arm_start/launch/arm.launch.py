@@ -21,6 +21,7 @@ def generate_launch_description():
     use_hardware = LaunchConfiguration('use_hardware')
     use_rviz = LaunchConfiguration('rviz')
     web_port = LaunchConfiguration('web_port')
+    tcp_storage_path = LaunchConfiguration('tcp_storage_path')
     model = LaunchConfiguration('model')
     controller_ns = PythonExpression([
         "'/fluidnc_bridge' if '", use_hardware, "' == 'true' else '/arm_sim'"])
@@ -65,6 +66,8 @@ def generate_launch_description():
                               description='Xacro model from arm_description/urdf'),
         DeclareLaunchArgument('web_port', default_value='8080',
                               description='Port of the web page'),
+        DeclareLaunchArgument('tcp_storage_path', default_value='~/.config/ros2_arm/tcps.json',
+                              description='Writable JSON file for named TCP offsets'),
 
         Node(
             package='robot_state_publisher',
@@ -86,6 +89,7 @@ def generate_launch_description():
                 'port': ParameterValue(web_port, value_type=int),
                 'bridge_ns': controller_ns,
                 'simulation': ParameterValue(simulation, value_type=bool),
+                'tcp_storage_path': tcp_storage_path,
             }],
             output='screen',
         ),
