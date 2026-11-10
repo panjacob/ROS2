@@ -43,7 +43,7 @@
 <body>
 <div class="row">
   <h1>Arm control</h1>
-  <button class="stop" onclick="post('/api/stop', {})">STOP</button>
+  <button class="stop" onclick="stopArm()">STOP</button>
   <button id="unlock" onclick="post('/api/unlock', {})">Unlock alarm</button>
   <span id="conn" class="muted">connecting…</span>
 </div>
@@ -105,10 +105,17 @@
     <span class="muted">hold − / + to move</span>
   </div>
   <table>
-    <thead><tr><th>Joint</th><th>Position [°]</th><th>Range</th><th>Jog</th><th>Go to [°]</th><th>Home</th></tr></thead>
+    <thead><tr><th>Joint</th><th>Position [°]</th><th>Range</th><th>Jog</th><th>Go to [°] direct</th><th>Plan target [°]</th><th>Home</th></tr></thead>
     <tbody id="joints"></tbody>
   </table>
   <p class="muted" id="age"></p>
+  <div class="row">
+    <button onclick="copyCurrentToPlan()">Copy current angles</button>
+    <button id="planButton" onclick="planJoints()">Plan joint motion</button>
+    <button id="executeButton" onclick="executeJoints()" disabled>Execute previewed plan</button>
+    <span id="planStatus" class="muted">Enter all target angles to preview a plan.</span>
+  </div>
+  <p class="muted">Planning checks joint limits and collisions. Review the RViz animation before executing. Execution is available in simulation.</p>
 </div>
 
 <div class="card">
@@ -125,6 +132,8 @@ const RANGE = 180;  // bar spans -RANGE..+RANGE degrees (360° total)
 let rowsBuilt = '';
 let jogTimer = null;
 let tcpUiKey = '';
+let latestJoints = {};
+let planId = null;
 
 function show(text, cls) { const m = $('msg'); m.textContent = text; m.className = cls || ''; }
 
@@ -137,6 +146,14 @@ async function post(path, body) {
     else if (!j.ok) show(j.message, 'bad');
     return j;
   } catch (e) { show('request failed: ' + e, 'bad'); }
+}
+
+async function stopArm() {
+  planId = null;
+  $('executeButton').disabled = true;
+  const result = await post('/api/stop', {});
+  $('planStatus').textContent = result?.ok ? 'Stopped.' : (result?.message || 'STOP failed.');
+  $('planStatus').className = result?.ok ? 'warn' : 'bad';
 }
 
 function startJog(joint, dir) {
@@ -156,6 +173,60 @@ function goTo(joint) {
   const v = $('goto_' + joint).value;
   if (v === '') return;
   post('/api/goto', {[joint]: Number(v)});
+}
+
+function copyCurrentToPlan() {
+  planChanged();
+  for (const n of Object.keys(config.joint_limits_deg || {})) {
+    const input = $('plan_' + n);
+    const angle = latestJoints[n]?.position_deg;
+    if (input && angle != null) input.value = angle.toFixed(2);
+  }
+}
+
+function planChanged() {
+  planId = null;
+  $('executeButton').disabled = true;
+  $('planStatus').textContent = 'Target changed; plan again before executing.';
+  $('planStatus').className = 'muted';
+}
+
+async function planJoints() {
+  planId = null;
+  $('executeButton').disabled = true;
+  const names = Object.keys(config.joint_limits_deg || {}).sort();
+  if (!names.length) { $('planStatus').textContent = 'Waiting for robot model.'; return; }
+  const target = {};
+  for (const n of names) {
+    const input = $('plan_' + n);
+    if (!input || input.value.trim() === '') {
+      $('planStatus').textContent = `Enter a target angle for ${n}.`;
+      $('planStatus').className = 'bad';
+      return;
+    }
+    target[n] = Number(input.value);
+  }
+  $('planButton').disabled = true;
+  $('planStatus').textContent = 'Planning…';
+  $('planStatus').className = 'warn';
+  try {
+    const result = await post('/api/plan', target);
+    planId = result?.ok ? result.plan_id : null;
+    $('planStatus').textContent = result?.message || 'Planning request failed.';
+    $('planStatus').className = result?.ok ? 'ok' : 'bad';
+  } finally { $('planButton').disabled = false; }
+}
+
+async function executeJoints() {
+  if (!planId || !config.execution_available) return;
+  const id = planId;
+  planId = null;
+  $('executeButton').disabled = true;
+  $('planStatus').textContent = 'Executing plan…';
+  $('planStatus').className = 'warn';
+  const result = await post('/api/execute', {plan_id: id});
+  $('planStatus').textContent = result?.message || 'Execution request failed.';
+  $('planStatus').className = result?.ok ? 'ok' : 'bad';
 }
 
 function home(joint) {
@@ -241,6 +312,7 @@ function buildRows(names) {
       <td><button onpointerdown="startJog('${n}',-1)">−</button>
           <button onpointerdown="startJog('${n}',1)">+</button></td>
       <td><input type="number" step="1" id="goto_${n}"> <button onclick="goTo('${n}')">Go</button></td>
+      <td><input type="number" step="0.1" id="plan_${n}" value="0" oninput="planChanged()"></td>
       <td>${config.home_joints.includes(n) ? `<button onclick="home('${n}')">Home</button>` : ''}</td></tr>`).join('');
 }
 
@@ -248,16 +320,23 @@ async function poll() {
   try {
     const s = await (await fetch('/state')).json();
     config = s.config;
+    $('executeButton').hidden = !config.execution_available;
+    $('executeButton').disabled = !planId || s.plan?.state !== 'ready';
+    if (s.plan?.state === 'executing') {
+      $('planStatus').textContent = s.plan.message;
+      $('planStatus').className = 'warn';
+    }
     updateTcpControls();
     $('controllerTitle').textContent = config.simulation ? 'Simulation' : 'Bridge';
     $('unlock').hidden = !!config.simulation;
     $('endstopsCard').hidden = !!config.simulation;
     if (config.max_jog_speed && $('speed').max != config.max_jog_speed) $('speed').max = config.max_jog_speed;
     $('conn').textContent = 'connected'; $('conn').className = 'ok';
-    const names = Object.keys(s.joints).sort();
+    const names = Object.keys(config.joint_limits_deg || {}).sort();
+    latestJoints = s.joints;
     buildRows(names);
     for (const n of names) {
-      const d = s.joints[n].position_deg;
+      const d = s.joints[n]?.position_deg;
       $('pos_' + n).textContent = d == null ? '–' : d.toFixed(2);
       const dot = $('dot_' + n);
       if (d == null) { dot.className = 'dot none'; continue; }

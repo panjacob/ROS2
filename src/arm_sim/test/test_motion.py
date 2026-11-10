@@ -31,3 +31,28 @@ def test_jog_expires_and_stop_holds_position():
     held = motion.position['joint1']
     motion.step(1.0, 1.6)
     assert math.isclose(motion.position['joint1'], held)
+
+
+def test_timed_trajectory_interpolates_and_can_be_stopped():
+    motion = JointMotion(joints_from_urdf(URDF))
+    motion.start_trajectory(['joint1'], [(0.0, [0.0]), (2.0, [0.5])], now=10.0)
+    motion.step(0.1, 11.0)
+    assert math.isclose(motion.position['joint1'], 0.25)
+    motion.step(0.1, 12.1)
+    assert math.isclose(motion.position['joint1'], 0.5)
+    assert motion.trajectory_result == 'completed'
+    motion.start_trajectory(['joint1'], [(1.0, [-0.5])], now=13.0)
+    motion.stop()
+    motion.step(1.0, 14.0)
+    assert motion.trajectory_result == 'interrupted'
+    assert math.isclose(motion.position['joint1'], 0.5)
+
+
+def test_trajectory_rejects_out_of_bounds_goal():
+    motion = JointMotion(joints_from_urdf(URDF))
+    try:
+        motion.start_trajectory(['joint1'], [(1.0, [2.0])], now=0.0)
+    except ValueError as exc:
+        assert 'outside URDF limits' in str(exc)
+    else:
+        raise AssertionError('out-of-bounds trajectory accepted')

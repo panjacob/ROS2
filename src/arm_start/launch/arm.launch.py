@@ -7,6 +7,9 @@ Web page (state, jog, go-to, homing, gamepad) at http://localhost:8080 (web_port
 A gamepad connected to the browser always works (browser -> /joy -> joy_teleop -> /jog).
 """
 
+import os
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, RegisterEventHandler
 from launch.conditions import IfCondition, UnlessCondition
@@ -15,6 +18,7 @@ from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitut
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackagePrefix, FindPackageShare
+from moveit_configs_utils import MoveItConfigsBuilder
 
 
 def generate_launch_description():
@@ -35,6 +39,22 @@ def generate_launch_description():
     rviz_config = PathJoinSubstitution(
         [FindPackageShare('arm_description'), 'rviz', 'arm.rviz'])
     robot_description = ParameterValue(Command(['xacro ', xacro_file]), value_type=str)
+    moveit_config = (
+        MoveItConfigsBuilder('printed_arm_concept', package_name='arm_moveit_config')
+        .robot_description(file_path=os.path.join(
+            get_package_share_directory('arm_description'), 'urdf',
+            'arm_concept.urdf.xacro'))
+        .robot_description_semantic(
+            file_path='config/arm.srdf.xacro',
+            mappings={'robot_name': PythonExpression([
+                "'printed_arm_concept' if '", model,
+                "'.startswith('arm_concept') else 'printed_arm'"])})
+        .planning_pipelines(pipelines=['ompl'])
+        .trajectory_execution(file_path='config/moveit_controllers.yaml')
+        .to_moveit_configs()
+    )
+    # Keep one URDF source for TF, MoveIt, and the web panel.
+    moveit_config.robot_description = {'robot_description': robot_description}
 
     # Hardware: first make sure /dev/ttyUSB0 exists (WSL: auto "usbipd attach"), then start the bridge.
     attach_board = ExecuteProcess(
@@ -70,6 +90,16 @@ def generate_launch_description():
                               description='Writable JSON file for named TCP offsets'),
 
         Node(
+            package='moveit_ros_move_group',
+            executable='move_group',
+            name='move_group',
+            parameters=[moveit_config.to_dict(), {
+                'allow_trajectory_execution': ParameterValue(simulation, value_type=bool),
+            }],
+            output='screen',
+        ),
+
+        Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
             parameters=[{'robot_description': robot_description}],
@@ -90,6 +120,7 @@ def generate_launch_description():
                 'bridge_ns': controller_ns,
                 'simulation': ParameterValue(simulation, value_type=bool),
                 'tcp_storage_path': tcp_storage_path,
+                'robot_description': robot_description,
             }],
             output='screen',
         ),
@@ -105,6 +136,8 @@ def generate_launch_description():
             package='rviz2',
             executable='rviz2',
             arguments=['-d', rviz_config],
+            parameters=[moveit_config.robot_description,
+                        moveit_config.robot_description_semantic],
             condition=IfCondition(use_rviz),
         ),
     ])

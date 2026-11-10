@@ -1,10 +1,14 @@
 """ROS interface for a simple joint simulator, using the FluidNC bridge topics."""
 
 import math
+import threading
 import time
 
 import rclpy
-from rclpy.executors import ExternalShutdownException
+from control_msgs.action import FollowJointTrajectory
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import JointState
@@ -25,7 +29,15 @@ class JointSimulator(Node):
         if timeout <= 0 or rate <= 0:
             raise ValueError('jog_timeout and publish_rate must be positive')
         self.motion = JointMotion(joints_from_urdf(description), timeout)
+        self._motion_lock = threading.RLock()
+        self._goal_reserved = False
         self._last_tick = time.monotonic()
+        self._trajectory_action = ActionServer(
+            self, FollowJointTrajectory, 'arm_controller/follow_joint_trajectory',
+            execute_callback=self._execute_trajectory,
+            goal_callback=self._on_trajectory_goal,
+            cancel_callback=self._on_trajectory_cancel,
+            callback_group=ReentrantCallbackGroup())
         self._joint_pub = self.create_publisher(JointState, 'joint_states', 10)
         self._state_pub = self.create_publisher(String, '~/machine_state', 10)
         self._pins_pub = self.create_publisher(String, '~/limit_switches', 10)
@@ -42,16 +54,77 @@ class JointSimulator(Node):
         self.get_logger().info('Joint simulator ready')
 
     def _on_command(self, msg):
-        self.motion.command(msg.name, msg.position)
+        with self._motion_lock:
+            self.motion.command(msg.name, msg.position)
 
     def _on_jog(self, msg):
-        self.motion.set_jog(msg.name, msg.velocity, time.monotonic())
+        with self._motion_lock:
+            self.motion.set_jog(msg.name, msg.velocity, time.monotonic())
 
     def _on_stop(self, _request, response):
-        self.motion.stop()
+        with self._motion_lock:
+            self.motion.stop()
         response.success = True
         response.message = 'Simulation stopped'
         return response
+
+    def _on_trajectory_goal(self, goal):
+        with self._motion_lock:
+            if self._goal_reserved or not goal.trajectory.points:
+                return GoalResponse.REJECT
+            self._goal_reserved = True
+        return GoalResponse.ACCEPT
+
+    @staticmethod
+    def _on_trajectory_cancel(_goal_handle):
+        return CancelResponse.ACCEPT
+
+    def _execute_trajectory(self, goal_handle):
+        result = FollowJointTrajectory.Result()
+        try:
+            trajectory = goal_handle.request.trajectory
+            points = [
+                (p.time_from_start.sec + p.time_from_start.nanosec * 1e-9,
+                 list(p.positions)) for p in trajectory.points]
+            try:
+                with self._motion_lock:
+                    self.motion.start_trajectory(
+                        trajectory.joint_names, points, time.monotonic())
+            except ValueError as exc:
+                result.error_code = FollowJointTrajectory.Result.INVALID_GOAL
+                result.error_string = str(exc)
+                goal_handle.abort()
+                return result
+
+            deadline = time.monotonic() + points[-1][0] + 3.0
+            while time.monotonic() < deadline:
+                if goal_handle.is_cancel_requested:
+                    with self._motion_lock:
+                        self.motion.stop()
+                    goal_handle.canceled()
+                    result.error_string = 'Trajectory canceled'
+                    return result
+                with self._motion_lock:
+                    status = self.motion.trajectory_result
+                if status == 'completed':
+                    goal_handle.succeed()
+                    result.error_code = FollowJointTrajectory.Result.SUCCESSFUL
+                    return result
+                if status == 'interrupted':
+                    goal_handle.abort()
+                    result.error_code = FollowJointTrajectory.Result.PATH_TOLERANCE_VIOLATED
+                    result.error_string = 'Trajectory interrupted by another command or STOP'
+                    return result
+                time.sleep(0.02)
+            with self._motion_lock:
+                self.motion.stop()
+            goal_handle.abort()
+            result.error_code = FollowJointTrajectory.Result.GOAL_TOLERANCE_VIOLATED
+            result.error_string = 'Trajectory did not finish in time'
+            return result
+        finally:
+            with self._motion_lock:
+                self._goal_reserved = False
 
     def _on_unlock(self, _request, response):
         response.success = True
@@ -62,16 +135,18 @@ class JointSimulator(Node):
         now = time.monotonic()
         dt = min(now - self._last_tick, 0.1)
         self._last_tick = now
-        previous = self.motion.position.copy()
-        moving = self.motion.step(dt, now)
+        with self._motion_lock:
+            previous = self.motion.position.copy()
+            moving = self.motion.step(dt, now)
+            positions = self.motion.position.copy()
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
-        msg.name = list(self.motion.position)
-        msg.position = list(self.motion.position.values())
+        msg.name = list(positions)
+        msg.position = list(positions.values())
         self._joint_pub.publish(msg)
         self._state_pub.publish(String(data='Run' if moving else 'Idle'))
         self._pins_pub.publish(String(data=''))
-        distance = math.sqrt(sum((self.motion.position[name] - value) ** 2
+        distance = math.sqrt(sum((positions[name] - value) ** 2
                                  for name, value in previous.items()))
         self._feed_pub.publish(Float64(data=math.degrees(distance / dt) * 60 if dt > 0 else 0.0))
         self._spindle_pub.publish(Float64(data=0.0))
@@ -80,11 +155,15 @@ class JointSimulator(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = JointSimulator()
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        executor.shutdown()
+        node._trajectory_action.destroy()
         node.destroy_node()
         rclpy.try_shutdown()
 

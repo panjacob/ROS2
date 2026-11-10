@@ -28,6 +28,19 @@ Visualization Manager:
       Name: TF
       Enabled: false
       Value: false
+    - Class: moveit_rviz_plugin/Trajectory
+      Name: Planned trajectory
+      Enabled: true
+      Robot Description: robot_description
+      Trajectory Topic: /display_planned_path
+      Robot Alpha: 0.5
+      Robot Color: 150; 50; 150
+      Show Robot Visual: true
+      Show Robot Collision: false
+      Show Trail: false
+      Loop Animation: true
+      State Display Time: 0.1 s
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
