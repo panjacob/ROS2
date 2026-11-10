@@ -5,6 +5,7 @@
 | Package | Type | Purpose |
 |---------|------|---------|
 | `arm_description` | ament_cmake | `urdf/arm.urdf.xacro`, `meshes/`, `launch/display.launch.py` |
+| `arm_sim` | ament_python | Joint simulator for panel Go/jog/gamepad commands; publishes `/joint_states` |
 | `arm_fluidnc_bridge` | ament_python | `fluidnc_bridge` node; `fluidnc_protocol.py` (pure, unit tested) |
 | `arm_start` | ament_cmake | `launch/arm.launch.py`, `config/fluidnc_bridge.yaml` |
 | `arm_web` | ament_python | `web_viewer` node: web page (default http://localhost:8080) with live state, STOP/unlock, hold-to-jog, go-to, endstop homing and browser gamepad forwarding |
@@ -146,10 +147,20 @@ To connect MoveIt to the real arm cleanly, implement `arm_hardware` (C++):
 Reference implementations: `ros2_control_demos` (example_1 RRBot), and the Thor/PAROL6
 community ROS 2 drivers.
 
-## 6.6 Simulation (optional)
+## 6.6 Joint simulation
 
-Add `<ros2_control>` + Gazebo (`ros_gz`) plugins to the xacro to test controllers and
-MoveIt without hardware. Requires realistic inertias (see [05](05-mechanical-design.md)).
+Run `ros2 launch arm_start arm.launch.py` and open http://localhost:8080. The `arm_sim`
+node accepts `/joint_command` and `/jog`, moves joints at the velocity limits from the
+URDF, and publishes `/joint_states`. The panel's Go, hold-to-jog, gamepad, and STOP
+controls work without the board; RViz shows the same positions. The simulation has no
+endstops or physical dynamics. `use_hardware:=true` selects the FluidNC bridge instead.
+
+The default model is `arm_concept.urdf.xacro`, which uses the meshes exported from
+Blender. Pass `model:=arm.urdf.xacro` to either launch file to inspect the original
+primitive model. Both models retain the same joint names, axes and limits.
+
+For physics and controller testing later, add `<ros2_control>` and Gazebo (`ros_gz`)
+plugins to the xacro. That requires realistic inertias (see [05](05-mechanical-design.md)).
 
 ## 6.7 Coding conventions
 

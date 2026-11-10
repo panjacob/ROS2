@@ -38,13 +38,13 @@
 <div class="row">
   <h1>Arm control</h1>
   <button class="stop" onclick="post('/api/stop', {})">STOP</button>
-  <button onclick="post('/api/unlock', {})">Unlock alarm</button>
+  <button id="unlock" onclick="post('/api/unlock', {})">Unlock alarm</button>
   <span id="conn" class="muted">connecting…</span>
 </div>
 <p id="msg"></p>
 
 <div class="card">
-  <h2>Bridge</h2>
+  <h2 id="controllerTitle">Bridge</h2>
   <div class="row">
     <span>State: <b id="mstate">–</b></span>
     <span>Limit pins: <b id="pins">–</b></span>
@@ -53,7 +53,7 @@
   </div>
 </div>
 
-<div class="card">
+<div class="card" id="endstopsCard">
   <h2>Endstops</h2>
   <div class="row" id="endstops"><span class="muted">–</span></div>
 </div>
@@ -141,6 +141,9 @@ async function poll() {
   try {
     const s = await (await fetch('/state')).json();
     config = s.config;
+    $('controllerTitle').textContent = config.simulation ? 'Simulation' : 'Bridge';
+    $('unlock').hidden = !!config.simulation;
+    $('endstopsCard').hidden = !!config.simulation;
     if (config.max_jog_speed && $('speed').max != config.max_jog_speed) $('speed').max = config.max_jog_speed;
     $('conn').textContent = 'connected'; $('conn').className = 'ok';
     const names = Object.keys(s.joints).sort();

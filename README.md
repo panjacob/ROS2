@@ -36,11 +36,14 @@ rosdep install --from-paths src --ignore-src -y
 colcon build --symlink-install
 source install/setup.bash
 
-# 1. Preview the model with joint sliders
+# 1. Preview the mesh model with joint sliders
 ros2 launch arm_description display.launch.py
 
-# 2. Simulation mode (joints at zero); live values at http://localhost:8080
+# 2. Joint simulation; use Go/jog/gamepad at http://localhost:8080 and watch RViz
 ros2 launch arm_start arm.launch.py
+
+# Optional: select the original primitive model instead
+ros2 launch arm_start arm.launch.py model:=arm.urdf.xacro
 
 # 3. Real hardware (edit src/arm_start/config/fluidnc_bridge.yaml first)
 #    control it at http://localhost:8080 (a connected gamepad works too)

@@ -80,7 +80,9 @@ class WebViewer(Node):
         self.host = self.declare_parameter('host', '0.0.0.0').value
         self.port = int(self.declare_parameter('port', 8080).value)
         bridge_ns = self.declare_parameter('bridge_ns', '/fluidnc_bridge').value.rstrip('/')
-        self.home_joints = list(self.declare_parameter('home_joints', ['joint1']).value)
+        self.simulation = bool(self.declare_parameter('simulation', False).value)
+        configured_home_joints = self.declare_parameter('home_joints', ['joint1']).value
+        self.home_joints = [] if self.simulation else list(configured_home_joints)
         # FluidNC Pn letter of each home joint's endstop (same order as home_joints)
         self.home_pins = list(self.declare_parameter('home_pins', ['X']).value)
         self.max_jog_speed = float(self.declare_parameter('max_jog_speed', 360.0).value)
@@ -110,6 +112,7 @@ class WebViewer(Node):
             'home_joints': self.home_joints,
             'endstops': dict(zip(self.home_joints, self.home_pins)),
             'max_jog_speed': self.max_jog_speed,
+            'simulation': self.simulation,
         }
 
     # --- actions (called from HTTP threads; the main thread spins) ---
