@@ -72,7 +72,7 @@ Hardware service and topic commands need a second terminal with ROS and this
 workspace sourced; see [ROS 2 software](docs/06-ros2-software.md#62-fluidnc_bridge-node).
 
 For step 2, open **http://localhost:8080** after the launch starts. In the Joints
-table, enter all five angles under **Target [°]**, then click **Preview plan**. Review the animation in RViz. Click **Execute plan** to move
+table, enter all five angles under **Target** (degrees by default; choose radians with **Joint units**), then click **Preview plan**. Review the animation in RViz. Click **Execute plan** to move
 the simulated robot; the panel reports completion or failure. **STOP** interrupts
 execution. A plan can be executed once within 120 seconds. Moving the arm with
 direct movement or jog invalidates the plan, so plan again before executing.

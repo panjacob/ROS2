@@ -100,8 +100,9 @@ Check the switch on the web page: the "Endstops" card shows a red **PRESSED** la
 `ros2 launch arm_start arm.launch.py use_hardware:=true`, then open
 http://localhost:8080 (from Windows too).
 
-- STOP / Unlock alarm, hold − / + to jog a joint, one shared "Target [°]" column for planning or direct movement, "Home" for `homing_joints`.
-- "Position gauge" bar per joint: −180° … 0 … +180°, the dot shows the current position (red and pinned to the end if outside).
+- STOP / Unlock alarm, hold − / + to jog a joint, one shared "Target" column for planning or direct movement; **Joint units** selects degrees (default) or radians for joint positions, targets, gauges and jog speed, "Home" for `homing_joints`.
+- Changing joint units preserves physical targets, jog speed and an unchanged ready plan. TCP angles remain in degrees; the HTTP API still uses degrees and degrees/s.
+- "Position gauge" bar per joint: −180° … 0 … +180° (−π … 0 … +π rad), the dot shows the current position (red and pinned to the end if outside).
 - TCP position: the panel reads the `world` → `tool0` transform from TF and displays
   the origin of `tool0` in world coordinates (X/Y/Z in millimetres). It marks the
   position unavailable if joint states or the transform become stale. The web node's
@@ -143,7 +144,7 @@ source install/setup.bash
 ros2 launch arm_start arm.launch.py
 ```
 
-Open http://localhost:8080, enter all five angles in **Target [°]**, then
+Open http://localhost:8080, enter all five angles in **Target** (degrees by default; choose radians with **Joint units**), then
 click **Preview plan**. After checking the RViz animation, click **Execute plan**. The panel shows the execution result. STOP interrupts the
 simulated movement. Start a new terminal with the ROS and workspace setup sourced
 before using `ros2 topic` or `ros2 service` commands.

@@ -80,15 +80,18 @@
 
 <div class="card" aria-labelledby="jointsTitle">
   <h2 id="jointsTitle">Joint targets</h2>
-  <p class="muted hint">Set one target pose, preview it in RViz, then execute in simulation. Targets are in degrees.</p>
+  <p class="muted hint">Set one target pose, preview it in RViz, then execute in simulation. Choose joint units below; TCP angles remain in degrees.</p>
   <div class="row" style="margin-bottom:.5em">
+    <label>Joint units <select id="jointUnits" onchange="setJointUnits(this.value)">
+      <option value="deg">Degrees (°)</option><option value="rad">Radians (rad)</option>
+    </select></label>
     <label>Jog speed <input id="speed" type="range" min="1" max="360" value="120"
-      oninput="speedLbl.textContent=this.value"> <span id="speedLbl">120</span> °/s</label>
+      oninput="speedChanged()"> <span id="speedLbl">120</span> <span id="speedUnit">°/s</span></label>
     <span class="muted hint">Hold − / + to jog; release to stop.</span>
   </div>
   <div class="table-scroll" role="region" aria-label="Joint targets and manual controls" tabindex="0">
     <table>
-      <thead><tr><th scope="col">Joint</th><th scope="col">Position [°]</th><th scope="col">Position gauge</th><th scope="col">Jog</th><th scope="col">Target [°]</th><th scope="col" id="homeHeading">Home</th></tr></thead>
+      <thead><tr><th scope="col">Joint</th><th scope="col" id="positionHeading">Position [°]</th><th scope="col">Position gauge</th><th scope="col">Jog</th><th scope="col" id="targetHeading">Target [°]</th><th scope="col" id="homeHeading">Home</th></tr></thead>
       <tbody id="joints"></tbody>
     </table>
   </div>
@@ -160,6 +163,87 @@ const $ = id => document.getElementById(id);
 let config = {home_joints: [], max_jog_speed: 360};
 const RANGE = 180;  // bar spans -RANGE..+RANGE degrees (360° total)
 let rowsBuilt = '';
+let jointUnits = 'deg';
+// Canonical degrees match the HTTP contract. Cache rendered text so a unit-only
+// switch never repeatedly converts or rounds an unchanged physical target.
+const targetDegrees = new Map();
+let jogDegrees = {text: '120', degrees: 120};
+const displayAngle = degrees => jointUnits === 'rad' ? degrees * Math.PI / 180 : degrees;
+const apiAngle = value => jointUnits === 'rad' ? value * 180 / Math.PI : value;
+const angleSymbol = () => jointUnits === 'rad' ? ' rad' : '°';
+const angleDigits = () => jointUnits === 'rad' ? 4 : 2;
+
+function cachedDegrees(input, previous) {
+  const text = input.value.trim();
+  if (previous?.text === text) return previous;
+  return {text, degrees: text && Number.isFinite(Number(text)) ? apiAngle(Number(text)) : null};
+}
+
+function captureTarget(n) {
+  const state = cachedDegrees($('target_' + n), targetDegrees.get(n));
+  targetDegrees.set(n, state);
+  return state.degrees;
+}
+
+function speedChanged() {
+  jogDegrees = cachedDegrees($('speed'), jogDegrees);
+  $('speedLbl').textContent = Number($('speed').value).toFixed(jointUnits === 'rad' ? 4 : 0);
+}
+
+function renderJointPositions() {
+  for (const n of Object.keys(config.joint_limits_deg || {})) {
+    if (!$('pos_' + n)) continue;
+    const d = latestJoints[n]?.position_deg;
+    $('pos_' + n).textContent = Number.isFinite(d) ? displayAngle(d).toFixed(angleDigits()) : '–';
+    const dot = $('dot_' + n);
+    if (!Number.isFinite(d)) { dot.className = 'dot none'; continue; }
+    const c = Math.max(-RANGE, Math.min(RANGE, d));
+    dot.style.left = (50 + 50 * c / RANGE) + '%';
+    dot.className = Math.abs(d) > RANGE ? 'dot out' : 'dot';
+    dot.title = displayAngle(d).toFixed(angleDigits()) + angleSymbol();
+  }
+}
+
+function renderJointUnits(convertTargets = false) {
+  const symbol = angleSymbol();
+  $('positionHeading').textContent = `Position [${symbol.trim()}]`;
+  $('targetHeading').textContent = `Target [${symbol.trim()}]`;
+  $('speedUnit').textContent = symbol.trim() + '/s';
+  const speed = $('speed');
+  speed.min = displayAngle(1);
+  speed.max = displayAngle(config.max_jog_speed || 360);
+  speed.step = 'any'; // Unit changes must not quantize the physical speed.
+  jogDegrees.degrees = Math.min(config.max_jog_speed || 360, Math.max(1, jogDegrees.degrees));
+  speed.value = displayAngle(jogDegrees.degrees);
+  jogDegrees.text = speed.value.trim();
+  $('speedLbl').textContent = Number(speed.value).toFixed(jointUnits === 'rad' ? 4 : 0);
+  for (const n of Object.keys(config.joint_limits_deg || {})) {
+    const input = $('target_' + n);
+    if (!input) continue;
+    const state = targetDegrees.get(n);
+    if (convertTargets && state?.degrees != null) {
+      input.value = String(displayAngle(state.degrees));
+      state.text = input.value.trim();
+    }
+    input.min = displayAngle(config.joint_limits_deg[n][0]);
+    input.max = displayAngle(config.joint_limits_deg[n][1]);
+    input.step = 'any'; // Both units accept full precision, including exact limits.
+    input.setAttribute('aria-label', `${n} target angle in ${jointUnits === 'rad' ? 'radians' : 'degrees'}`);
+    $('scale_' + n).textContent = `${displayAngle(-RANGE).toFixed(angleDigits())}${symbol}`;
+    $('scaleZero_' + n).textContent = '0' + symbol;
+    $('scaleMax_' + n).textContent = `+${displayAngle(RANGE).toFixed(angleDigits())}${symbol}`;
+  }
+  renderJointPositions();
+}
+
+function setJointUnits(units) {
+  if (!['deg', 'rad'].includes(units) || units === jointUnits) return;
+  for (const n of Object.keys(config.joint_limits_deg || {}))
+    if ($('target_' + n)) captureTarget(n);
+  jogDegrees = cachedDegrees($('speed'), jogDegrees);
+  jointUnits = units;
+  renderJointUnits(true);
+}
 let jogTimer = null;
 let tcpUiKey = '';
 let latestJoints = {};
@@ -230,7 +314,10 @@ async function stopArm() {
 
 function startJog(joint, dir) {
   stopJog();
-  const send = () => post('/api/jog', {[joint]: dir * Number($('speed').value)});
+  const send = () => {
+    jogDegrees = cachedDegrees($('speed'), jogDegrees);
+    if (jogDegrees.degrees != null) post('/api/jog', {[joint]: dir * jogDegrees.degrees});
+  };
   send();
   jogTimer = {id: setInterval(send, 100), joint};
 }
@@ -248,12 +335,17 @@ function copyCurrentToPlan() {
   for (const n of Object.keys(config.joint_limits_deg || {})) {
     const input = $('target_' + n);
     const angle = latestJoints[n]?.position_deg;
-    if (input) input.value = fresh && Number.isFinite(angle) ? String(angle) : '';
+    if (input) {
+      input.value = fresh && Number.isFinite(angle) ? String(displayAngle(angle)) : '';
+      targetDegrees.set(n, {text: input.value.trim(), degrees: fresh && Number.isFinite(angle) ? angle : null});
+    }
   }
   planStatus(fresh ? 'Current angles copied. Adjust targets, then preview a plan.' : 'No fresh joint state. Enter targets manually or wait for current angles.', fresh ? 'muted' : 'warn');
 }
 
 function planChanged() {
+  for (const n of Object.keys(config.joint_limits_deg || {}))
+    if ($('target_' + n)) captureTarget(n);
   invalidatePlan('Targets changed; preview again before executing.');
 }
 
@@ -264,10 +356,10 @@ function readTargets() {
   for (const n of names) {
     const input = $('target_' + n);
     const value = input?.value.trim();
-    const angle = Number(value);
+    const angle = input ? captureTarget(n) : null;
     const [lower, upper] = config.joint_limits_deg[n];
-    if (!value || !Number.isFinite(angle) || angle < lower || angle > upper) {
-      planStatus(`Enter a finite target for ${n} within ${lower.toFixed(1)}° to ${upper.toFixed(1)}°.`, 'bad');
+    if (!value || angle == null || !Number.isFinite(angle) || angle < lower || angle > upper) {
+      planStatus(`Enter a finite target for ${n} within ${displayAngle(lower).toFixed(angleDigits())}${angleSymbol()} to ${displayAngle(upper).toFixed(angleDigits())}${angleSymbol()}.`, 'bad');
       input?.focus();
       return null;
     }
@@ -416,12 +508,13 @@ function buildRows(names) {
   $('joints').innerHTML = names.map(n => `
     <tr><th scope="row">${n}</th><td class="num" id="pos_${n}">–</td>
       <td><div class="bar"><div class="mid"></div><div class="dot none" id="dot_${n}"></div></div>
-          <div class="scale"><span>-${RANGE}°</span><span>0°</span><span>+${RANGE}°</span></div></td>
+          <div class="scale"><span id="scale_${n}">-${RANGE}°</span><span id="scaleZero_${n}">0°</span><span id="scaleMax_${n}">+${RANGE}°</span></div></td>
       <td><button aria-label="Jog ${n} negative" onpointerdown="startJog('${n}',-1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',-1); }">−</button>
           <button aria-label="Jog ${n} positive" onpointerdown="startJog('${n}',1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',1); }">+</button></td>
       <td><input class="target-input" aria-label="${n} target angle in degrees" type="number" step="any" min="${config.joint_limits_deg[n][0]}" max="${config.joint_limits_deg[n][1]}" id="target_${n}" oninput="planChanged()"></td>
       ${config.home_joints.length ? `<td>${config.home_joints.includes(n) ? `<button aria-label="Home ${n}" onclick="home('${n}')">Home</button>` : '—'}</td>` : ''}</tr>`).join('');
   for (const n of names) $('target_' + n).value = previous[n];
+  renderJointUnits();
 }
 
 async function poll() {
@@ -460,20 +553,11 @@ async function poll() {
     $('controllerTitle').textContent = config.simulation ? 'Simulation' : 'Bridge';
     $('unlock').hidden = !!config.simulation;
     $('endstopsCard').hidden = !!config.simulation;
-    if (config.max_jog_speed && $('speed').max != config.max_jog_speed) $('speed').max = config.max_jog_speed;
+    jogDegrees = cachedDegrees($('speed'), jogDegrees);
     $('conn').textContent = 'connected'; $('conn').className = 'ok';
     const names = Object.keys(config.joint_limits_deg || {}).sort();
     buildRows(names);
-    for (const n of names) {
-      const d = s.joints[n]?.position_deg;
-      $('pos_' + n).textContent = d == null ? '–' : d.toFixed(2);
-      const dot = $('dot_' + n);
-      if (d == null) { dot.className = 'dot none'; continue; }
-      const c = Math.max(-RANGE, Math.min(RANGE, d));
-      dot.style.left = (50 + 50 * c / RANGE) + '%';
-      dot.className = Math.abs(d) > RANGE ? 'dot out' : 'dot';
-      dot.title = d.toFixed(2) + '°';
-    }
+    renderJointUnits();
     $('age').textContent = s.joints_age == null ? 'no joint_states yet'
       : `joint_states age ${s.joints_age.toFixed(2)} s`;
     $('tcpFrames').textContent = `${config.reference_frame} → ${config.selected_tcp} (${config.tcp_frame})`;
