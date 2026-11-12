@@ -19,3 +19,9 @@ Thumbs.db
 
 # CAD exports that are regenerated (keep sources, STEP and final STLs under hardware/)
 *.3mf.bak
+
+# Agent tooling
+.codex/
+docs/agent-log/
+AGENTS.md
+docs/agent-config-logging.patch
