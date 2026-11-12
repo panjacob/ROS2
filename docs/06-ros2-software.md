@@ -5,7 +5,7 @@
 | Package | Type | Purpose |
 |---------|------|---------|
 | `arm_description` | ament_cmake | `urdf/arm.urdf.xacro`, `meshes/`, `launch/display.launch.py` |
-| `arm_sim` | ament_python | Joint simulator for panel Go/jog/gamepad commands; publishes `/joint_states` |
+| `arm_sim` | ament_python | Joint simulator for panel direct/jog/gamepad commands; publishes `/joint_states` |
 | `arm_fluidnc_bridge` | ament_python | `fluidnc_bridge` node; `fluidnc_protocol.py` (pure, unit tested) |
 | `arm_start` | ament_cmake | `launch/arm.launch.py`, `config/fluidnc_bridge.yaml` |
 | `arm_web` | ament_python | `web_viewer` node: web page (default http://localhost:8080) with live state, STOP/unlock, hold-to-jog, go-to, endstop homing and browser gamepad forwarding |
@@ -100,8 +100,8 @@ Check the switch on the web page: the "Endstops" card shows a red **PRESSED** la
 `ros2 launch arm_start arm.launch.py use_hardware:=true`, then open
 http://localhost:8080 (from Windows too).
 
-- STOP / Unlock alarm, hold − / + to jog a joint, "Go" to move to an angle, "Home" for `homing_joints`.
-- "Range" bar per joint: −180° … 0 … +180°, the dot shows the current position (red and pinned to the end if outside).
+- STOP / Unlock alarm, hold − / + to jog a joint, one shared "Target [°]" column for planning or direct movement, "Home" for `homing_joints`.
+- "Position gauge" bar per joint: −180° … 0 … +180°, the dot shows the current position (red and pinned to the end if outside).
 - TCP position: the panel reads the `world` → `tool0` transform from TF and displays
   the origin of `tool0` in world coordinates (X/Y/Z in millimetres). It marks the
   position unavailable if joint states or the transform become stale. The web node's
@@ -143,9 +143,8 @@ source install/setup.bash
 ros2 launch arm_start arm.launch.py
 ```
 
-Open http://localhost:8080, enter all five angles in **Plan target [°]**, then
-click **Plan joint motion**. After checking the RViz animation, click **Execute
-previewed plan**. The panel shows the execution result. STOP interrupts the
+Open http://localhost:8080, enter all five angles in **Target [°]**, then
+click **Preview plan**. After checking the RViz animation, click **Execute plan**. The panel shows the execution result. STOP interrupts the
 simulated movement. Start a new terminal with the ROS and workspace setup sourced
 before using `ros2 topic` or `ros2 service` commands.
 
@@ -154,14 +153,17 @@ and the current URDF. The panel sends all five target joint angles to `/move_act
 with `plan_only=true`. The start state comes from `/joint_states`; successful
 trajectories are published to `/display_planned_path` and animated in RViz.
 The panel reports missing/stale joint states, out-of-limit goals, collisions, and
-planning failures. Planning itself does not move the arm. **Execute previewed plan**
+planning failures. Planning itself does not move the arm. **Execute plan**
 passes the stored trajectory to MoveIt's `/execute_trajectory` action. MoveIt
 uses the simulator's `/arm_controller/follow_joint_trajectory` action to follow
 its timed points and reports completion or failure to the panel. A plan can be
 executed once within 120 seconds; execution is rejected if the current joints
 have moved from the plan's start. STOP cancels the action and stops the simulator.
-The existing Go and jog controls still command the simulator directly and invalidate
-the previewed plan.
+The disclosed **Direct movement — no collision checking** action uses the same complete
+target pose as planning and sends it directly; a sent command does not confirm arrival.
+Use **Use current angles** before changing individual joints. Direct movement, jog,
+homing, STOP and target edits invalidate the local preview; late planning replies
+cannot re-enable execution after those changes.
 
 The self-collision exclusions in `src/arm_moveit_config/config/arm.srdf.xacro` cover
 adjacent links only. The URDF collision shapes are approximations, so revalidate
@@ -195,7 +197,7 @@ community ROS 2 drivers.
 Run `ros2 launch arm_start arm.launch.py` and open http://localhost:8080. The `arm_sim`
 node accepts `/joint_command`, `/jog`, and the
 `/arm_controller/follow_joint_trajectory` action; it publishes `/joint_states`.
-The panel's Go, hold-to-jog, gamepad, Execute, and STOP
+The panel's direct movement, hold-to-jog, gamepad, Execute, and STOP
 controls work without the board; RViz shows the same positions. The simulation has no
 endstops or physical dynamics. `use_hardware:=true` selects the FluidNC bridge instead.
 

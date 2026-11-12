@@ -5,7 +5,7 @@
 <title>Arm control</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
-  body { font-family: system-ui, sans-serif; margin: 1.5em; background: #f4f5f7; color: #222; }
+  body { font-family: system-ui, sans-serif; margin: 1.5em auto; padding: 0 1em; max-width: 1200px; background: #f4f5f7; color: #222; }
   h1 { margin: 0 0 .3em; font-size: 1.4em; }
   h2 { font-size: 1.05em; margin: 0 0 .5em; }
   .card { background: #fff; border-radius: 8px; padding: 1em; margin-bottom: 1em; box-shadow: 0 1px 3px #0002; }
@@ -14,10 +14,24 @@
   td.num { font-variant-numeric: tabular-nums; text-align: right; }
   button { font-size: 1em; padding: .35em .8em; border-radius: 5px; border: 1px solid #888; background: #fafafa; cursor: pointer; user-select: none; touch-action: none; }
   button:active { background: #dde; }
+  button:disabled { cursor: not-allowed; opacity: .55; }
+  button.primary { background: #175b9d; color: white; border-color: #124778; }
+  button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid #175b9d; outline-offset: 3px; }
+  input, select { font: inherit; padding: .35em; }
+  .table-scroll { overflow-x: auto; margin: .6em 0; }
+  .table-scroll table { min-width: 730px; }
+  .target-input { background: #f0f6ff; border: 1px solid #879db9; border-radius: 4px; }
+  .actions { padding: 1em 0 .4em; }
+  details { margin-top: 1em; border-top: 1px solid #dde2e8; padding-top: .8em; }
+  summary { cursor: pointer; font-weight: 600; width: fit-content; }
+  .direct { background: #fff9ed; padding: .8em; border: 1px solid #e6d4ae; border-radius: 6px; }
+  .direct p { margin: .6em 0; }
+  .hint { font-size: .9em; }
+  @media (max-width: 600px) { body { margin: .8em auto; padding: 0 .6em; } .card { padding: .8em; } .row { gap: .7em; } .actions button { flex: 1 1 auto; } }
   button.stop { background: #d32; color: #fff; border-color: #a10; font-weight: bold; font-size: 1.2em; padding: .5em 1.6em; }
   input[type=number] { width: 6em; }
   .row { display: flex; gap: 1em; align-items: center; flex-wrap: wrap; }
-  .muted { color: #888; }
+  .muted { color: #596574; }
   .ok { color: #080; } .bad { color: #c00; } .warn { color: #b60; }
   #msg { min-height: 1.3em; }
   .lamp { display: inline-block; padding: .15em .7em; border-radius: 1em; font-weight: bold;
@@ -47,7 +61,7 @@
   <button id="unlock" onclick="post('/api/unlock', {})">Unlock alarm</button>
   <span id="conn" class="muted">connecting…</span>
 </div>
-<p id="msg"></p>
+<p id="msg" role="status" aria-live="polite"></p>
 
 <div class="card">
   <h2 id="controllerTitle">Bridge</h2>
@@ -62,6 +76,35 @@
 <div class="card" id="endstopsCard">
   <h2>Endstops</h2>
   <div class="row" id="endstops"><span class="muted">–</span></div>
+</div>
+
+<div class="card" aria-labelledby="jointsTitle">
+  <h2 id="jointsTitle">Joint targets</h2>
+  <p class="muted hint">Set one target pose, preview it in RViz, then execute in simulation. Targets are in degrees.</p>
+  <div class="row" style="margin-bottom:.5em">
+    <label>Jog speed <input id="speed" type="range" min="1" max="360" value="120"
+      oninput="speedLbl.textContent=this.value"> <span id="speedLbl">120</span> °/s</label>
+    <span class="muted hint">Hold − / + to jog; release to stop.</span>
+  </div>
+  <div class="table-scroll" role="region" aria-label="Joint targets and manual controls" tabindex="0">
+    <table>
+      <thead><tr><th scope="col">Joint</th><th scope="col">Position [°]</th><th scope="col">Position gauge</th><th scope="col">Jog</th><th scope="col">Target [°]</th><th scope="col" id="homeHeading">Home</th></tr></thead>
+      <tbody id="joints"></tbody>
+    </table>
+  </div>
+  <p class="muted hint" id="age"></p>
+  <div class="row actions">
+    <button onclick="copyCurrentToPlan()">Use current angles</button>
+    <button class="primary" id="planButton" onclick="planJoints()">Preview plan</button>
+    <button class="primary" id="executeButton" onclick="executeJoints()" disabled>Execute plan</button>
+  </div>
+  <p id="planStatus" class="muted" role="status" aria-live="polite">Enter every target angle, or use current angles to start.</p>
+  <p class="muted hint" id="executionHint">Planning checks joint limits and collisions. Review the RViz animation before executing.</p>
+  <details class="direct">
+    <summary>Direct movement — no collision checking</summary>
+    <p class="hint">Uses the same targets above and sends them directly, without the previewed plan. A sent command does not confirm arrival.</p>
+    <button id="directButton" onclick="moveDirectly()">Move directly to targets</button>
+  </details>
 </div>
 
 <div class="card">
@@ -81,9 +124,13 @@
   <span class="muted" id="tcpStatus">Waiting for TF</span>
   <div class="row" style="margin-top:1em">
     <label>Active TCP <select id="tcpSelect" onchange="selectTcp(this.value)"></select></label>
-    <button onclick="newTcp()">New TCP</button>
-    <button id="tcpDelete" onclick="deleteTcp()">Delete selected</button>
   </div>
+  <details>
+    <summary>TCP settings</summary>
+    <div class="row" style="margin-top:.8em">
+      <button onclick="newTcp()">New TCP</button>
+      <button id="tcpDelete" onclick="deleteTcp()">Delete selected</button>
+    </div>
   <div class="tcp-editor">
     <label>Name <input id="tcpName" placeholder="gripper_tip" maxlength="32"></label>
     <label>X [mm] <input id="tcpOffsetX" type="number" step="0.1" value="0"></label>
@@ -95,34 +142,17 @@
     <button id="tcpSave" onclick="saveTcp()">Save and select</button>
   </div>
   <p class="muted">Offsets and rotation are relative to tool0. Names: letters, numbers, _ or -.</p>
+  </details>
 </div>
 
-<div class="card">
-  <h2>Joints</h2>
-  <div class="row" style="margin-bottom:.5em">
-    <label>Jog speed <input id="speed" type="range" min="1" max="360" value="120"
-      oninput="speedLbl.textContent=this.value"> <span id="speedLbl">120</span> °/s</label>
-    <span class="muted">hold − / + to move</span>
-  </div>
-  <table>
-    <thead><tr><th>Joint</th><th>Position [°]</th><th>Range</th><th>Jog</th><th>Go to [°] direct</th><th>Plan target [°]</th><th>Home</th></tr></thead>
-    <tbody id="joints"></tbody>
-  </table>
-  <p class="muted" id="age"></p>
-  <div class="row">
-    <button onclick="copyCurrentToPlan()">Copy current angles</button>
-    <button id="planButton" onclick="planJoints()">Plan joint motion</button>
-    <button id="executeButton" onclick="executeJoints()" disabled>Execute previewed plan</button>
-    <span id="planStatus" class="muted">Enter all target angles to preview a plan.</span>
-  </div>
-  <p class="muted">Planning checks joint limits and collisions. Review the RViz animation before executing. Execution is available in simulation.</p>
-</div>
 
 <div class="card">
   <h2>Gamepad</h2>
   <p id="padinfo" class="muted">–</p>
-  <p class="muted">Left stick X → joint1, left stick Y → joint2, right stick Y → joint3,
+  <details><summary>Gamepad mapping</summary>
+    <p class="muted">Left stick X → joint1, left stick Y → joint2, right stick Y → joint3,
     right stick X → joint4, LB/RB → joint5, B → STOP.</p>
+  </details>
 </div>
 
 <script>
@@ -133,105 +163,180 @@ let rowsBuilt = '';
 let jogTimer = null;
 let tcpUiKey = '';
 let latestJoints = {};
+let latestJointsAge = null;
+let latestJointsReceived = 0;
 let planId = null;
+let planReady = false;
+let planRevision = 0;
+let planPending = false;
+let executionPending = false;
+let localPlanNotice = true;
+let connected = false;
+let pollSequence = 0;
+let appliedPoll = 0;
+let planPollAfter = 0;
 
 function show(text, cls) { const m = $('msg'); m.textContent = text; m.className = cls || ''; }
 
-async function post(path, body) {
+async function post(path, body, quiet = false) {
+  const manualMotion = ['/api/goto', '/api/home', '/api/unlock'].includes(path)
+    || (path === '/api/jog' && Object.values(body).some(v => v !== 0))
+    || (path === '/api/joy' && (body.axes.some(v => Math.abs(v) > .1) || body.buttons.some(Boolean)));
+  if (manualMotion) invalidatePlan('Manual command; preview again before executing.');
   try {
     const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
                                  body: JSON.stringify(body)});
     const j = await r.json();
-    if (path !== '/api/jog' && path !== '/api/joy') show(j.message, j.ok ? 'ok' : 'bad');
-    else if (!j.ok) show(j.message, 'bad');
+    if (!quiet && (path !== '/api/jog' && path !== '/api/joy' || !j.ok)) show(j.message, j.ok ? 'ok' : 'bad');
     return j;
-  } catch (e) { show('request failed: ' + e, 'bad'); }
+  } catch (e) { if (!quiet) show('Request failed: ' + e, 'bad'); }
+}
+
+function planStatus(message, cls = 'muted') {
+  $('planStatus').textContent = message;
+  $('planStatus').className = cls;
+}
+
+function freshJointState() {
+  const names = Object.keys(config.joint_limits_deg || {});
+  return connected && names.length > 0 && latestJointsAge != null
+    && latestJointsAge + (Date.now() - latestJointsReceived) / 1000 <= 2
+    && names.every(n => Number.isFinite(latestJoints[n]?.position_deg));
+}
+
+function updatePlanButtons() {
+  $('executeButton').disabled = !freshJointState() || !config.execution_available || !planId || !planReady || planPending || executionPending;
+  $('planButton').disabled = !connected || planPending || executionPending;
+  $('directButton').disabled = !connected || executionPending;
+}
+
+function invalidatePlan(message) {
+  planRevision++;
+  planId = null;
+  planReady = false;
+  localPlanNotice = true;
+  planStatus(message);
+  updatePlanButtons();
 }
 
 async function stopArm() {
-  planId = null;
-  $('executeButton').disabled = true;
-  const result = await post('/api/stop', {});
-  $('planStatus').textContent = result?.ok ? 'Stopped.' : (result?.message || 'STOP failed.');
-  $('planStatus').className = result?.ok ? 'warn' : 'bad';
+  stopJog();
+  invalidatePlan('Stopping…');
+  const revision = planRevision;
+  const result = await post('/api/stop', {}, true);
+  if (revision === planRevision)
+    planStatus(result?.ok ? 'Stopped.' : (result?.message || 'STOP failed.'), result?.ok ? 'warn' : 'bad');
 }
 
 function startJog(joint, dir) {
   stopJog();
   const send = () => post('/api/jog', {[joint]: dir * Number($('speed').value)});
   send();
-  jogTimer = setInterval(send, 100);
-  jogTimer.joint = joint;
+  jogTimer = {id: setInterval(send, 100), joint};
 }
 function stopJog() {
-  if (jogTimer) { clearInterval(jogTimer); post('/api/jog', {[jogTimer.joint]: 0}); jogTimer = null; }
+  if (jogTimer) { clearInterval(jogTimer.id); post('/api/jog', {[jogTimer.joint]: 0}); jogTimer = null; }
 }
 window.addEventListener('pointerup', stopJog);
+window.addEventListener('pointercancel', stopJog);
 window.addEventListener('blur', stopJog);
-
-function goTo(joint) {
-  const v = $('goto_' + joint).value;
-  if (v === '') return;
-  post('/api/goto', {[joint]: Number(v)});
-}
+window.addEventListener('keyup', event => { if (event.key === ' ' || event.key === 'Enter') stopJog(); });
 
 function copyCurrentToPlan() {
   planChanged();
+  const fresh = freshJointState();
   for (const n of Object.keys(config.joint_limits_deg || {})) {
-    const input = $('plan_' + n);
+    const input = $('target_' + n);
     const angle = latestJoints[n]?.position_deg;
-    if (input && angle != null) input.value = angle.toFixed(2);
+    if (input) input.value = fresh && Number.isFinite(angle) ? String(angle) : '';
   }
+  planStatus(fresh ? 'Current angles copied. Adjust targets, then preview a plan.' : 'No fresh joint state. Enter targets manually or wait for current angles.', fresh ? 'muted' : 'warn');
 }
 
 function planChanged() {
-  planId = null;
-  $('executeButton').disabled = true;
-  $('planStatus').textContent = 'Target changed; plan again before executing.';
-  $('planStatus').className = 'muted';
+  invalidatePlan('Targets changed; preview again before executing.');
+}
+
+function readTargets() {
+  const names = Object.keys(config.joint_limits_deg || {}).sort();
+  if (!names.length) { planStatus('Waiting for robot model.', 'bad'); return null; }
+  const target = {};
+  for (const n of names) {
+    const input = $('target_' + n);
+    const value = input?.value.trim();
+    const angle = Number(value);
+    const [lower, upper] = config.joint_limits_deg[n];
+    if (!value || !Number.isFinite(angle) || angle < lower || angle > upper) {
+      planStatus(`Enter a finite target for ${n} within ${lower.toFixed(1)}° to ${upper.toFixed(1)}°.`, 'bad');
+      input?.focus();
+      return null;
+    }
+    target[n] = angle;
+  }
+  return target;
+}
+
+async function moveDirectly() {
+  invalidatePlan('Direct movement selected; preview again before executing a plan.');
+  const target = readTargets();
+  if (!target || !connected || executionPending) return;
+  stopJog();
+  const request = post('/api/goto', target, true);
+  const revision = planRevision;
+  const result = await request;
+  if (revision === planRevision)
+    planStatus(result?.ok ? 'Direct command sent; arrival is not confirmed.' : (result?.message || 'Direct request failed.'), result?.ok ? 'warn' : 'bad');
 }
 
 async function planJoints() {
-  planId = null;
-  $('executeButton').disabled = true;
-  const names = Object.keys(config.joint_limits_deg || {}).sort();
-  if (!names.length) { $('planStatus').textContent = 'Waiting for robot model.'; return; }
-  const target = {};
-  for (const n of names) {
-    const input = $('plan_' + n);
-    if (!input || input.value.trim() === '') {
-      $('planStatus').textContent = `Enter a target angle for ${n}.`;
-      $('planStatus').className = 'bad';
-      return;
-    }
-    target[n] = Number(input.value);
-  }
-  $('planButton').disabled = true;
-  $('planStatus').textContent = 'Planning…';
-  $('planStatus').className = 'warn';
+  if (!connected || planPending || executionPending) return;
+  invalidatePlan('Preparing preview…');
+  const target = readTargets();
+  if (!target) return;
+  stopJog();
+  const revision = planRevision;
+  planPending = true;
+  updatePlanButtons();
+  planStatus('Planning…', 'warn');
   try {
-    const result = await post('/api/plan', target);
-    planId = result?.ok ? result.plan_id : null;
-    $('planStatus').textContent = result?.message || 'Planning request failed.';
-    $('planStatus').className = result?.ok ? 'ok' : 'bad';
-  } finally { $('planButton').disabled = false; }
+    const result = await post('/api/plan', target, true);
+    if (revision !== planRevision) return;
+    planId = result?.ok && result.plan_id ? result.plan_id : null;
+    planReady = false; // A fresh matching /state response must confirm readiness.
+    localPlanNotice = false;
+    planPollAfter = pollSequence;
+    planStatus(result?.message || 'Planning request failed.', planId ? 'ok' : 'bad');
+  } finally {
+    planPending = false;
+    updatePlanButtons();
+  }
 }
 
 async function executeJoints() {
-  if (!planId || !config.execution_available) return;
+  if (!planId || !planReady || !freshJointState() || !config.execution_available || planPending || executionPending) return;
   const id = planId;
-  planId = null;
-  $('executeButton').disabled = true;
-  $('planStatus').textContent = 'Executing plan…';
-  $('planStatus').className = 'warn';
-  const result = await post('/api/execute', {plan_id: id});
-  $('planStatus').textContent = result?.message || 'Execution request failed.';
-  $('planStatus').className = result?.ok ? 'ok' : 'bad';
+  invalidatePlan('Executing plan…');
+  const revision = planRevision;
+  localPlanNotice = false;
+  executionPending = true;
+  updatePlanButtons();
+  try {
+    const result = await post('/api/execute', {plan_id: id}, true);
+    if (revision === planRevision) {
+      planPollAfter = pollSequence;
+      planStatus(result?.message || 'Execution request failed.', result?.ok ? 'ok' : 'bad');
+    }
+  } finally {
+    executionPending = false;
+    updatePlanButtons();
+  }
 }
 
 function home(joint) {
-  if (confirm(`Home ${joint}? It will turn left until the endstop, then right until the endstop.`))
+  if (confirm(`Home ${joint}? It will turn left until the endstop, then right until the endstop.`)) {
+    stopJog();
     post('/api/home', {joint});
+  }
 }
 
 function loadTcpEditor(tcp) {
@@ -302,30 +407,55 @@ async function deleteTcp() {
 }
 
 function buildRows(names) {
-  const key = names.join(',') + '|' + config.home_joints.join(',');
+  const key = JSON.stringify([names, config.home_joints, config.joint_limits_deg]);
   if (key === rowsBuilt) return;
+  const previous = Object.fromEntries(names.map(n => [n, $('target_' + n)?.value || '']));
+  if (rowsBuilt) invalidatePlan('Robot configuration changed; check targets and preview again.');
   rowsBuilt = key;
+  $('homeHeading').hidden = !config.home_joints.length;
   $('joints').innerHTML = names.map(n => `
-    <tr><td>${n}</td><td class="num" id="pos_${n}">–</td>
+    <tr><th scope="row">${n}</th><td class="num" id="pos_${n}">–</td>
       <td><div class="bar"><div class="mid"></div><div class="dot none" id="dot_${n}"></div></div>
           <div class="scale"><span>-${RANGE}°</span><span>0°</span><span>+${RANGE}°</span></div></td>
-      <td><button onpointerdown="startJog('${n}',-1)">−</button>
-          <button onpointerdown="startJog('${n}',1)">+</button></td>
-      <td><input type="number" step="1" id="goto_${n}"> <button onclick="goTo('${n}')">Go</button></td>
-      <td><input type="number" step="0.1" id="plan_${n}" value="0" oninput="planChanged()"></td>
-      <td>${config.home_joints.includes(n) ? `<button onclick="home('${n}')">Home</button>` : ''}</td></tr>`).join('');
+      <td><button aria-label="Jog ${n} negative" onpointerdown="startJog('${n}',-1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',-1); }">−</button>
+          <button aria-label="Jog ${n} positive" onpointerdown="startJog('${n}',1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',1); }">+</button></td>
+      <td><input class="target-input" aria-label="${n} target angle in degrees" type="number" step="any" min="${config.joint_limits_deg[n][0]}" max="${config.joint_limits_deg[n][1]}" id="target_${n}" oninput="planChanged()"></td>
+      ${config.home_joints.length ? `<td>${config.home_joints.includes(n) ? `<button aria-label="Home ${n}" onclick="home('${n}')">Home</button>` : '—'}</td>` : ''}</tr>`).join('');
+  for (const n of names) $('target_' + n).value = previous[n];
 }
 
 async function poll() {
+  const sequence = ++pollSequence;
+  const revision = planRevision;
   try {
-    const s = await (await fetch('/state')).json();
+    const response = await fetch('/state');
+    if (!response.ok) throw new Error('State request failed');
+    const s = await response.json();
+    if (sequence < appliedPoll) return;
+    appliedPoll = sequence;
+    connected = true;
     config = s.config;
+    latestJoints = s.joints;
+    latestJointsAge = s.joints_age;
+    latestJointsReceived = Date.now();
     $('executeButton').hidden = !config.execution_available;
-    $('executeButton').disabled = !planId || s.plan?.state !== 'ready';
-    if (s.plan?.state === 'executing') {
-      $('planStatus').textContent = s.plan.message;
-      $('planStatus').className = 'warn';
+    $('executionHint').textContent = config.execution_available
+      ? 'Planning checks joint limits and collisions. Review the RViz animation before executing in simulation.'
+      : 'Plan preview only; execution unavailable on hardware. Review the RViz animation. Direct movement below does not use collision checking.';
+    if (revision === planRevision && !planPending && sequence > planPollAfter) {
+      if (planId) {
+        if (s.plan?.state === 'ready' && s.plan.plan_id === planId) {
+          planReady = freshJointState();
+          planStatus(planReady ? (s.plan.message || 'Preview ready. Review the RViz animation.') : 'No fresh complete joint state; wait before executing.', planReady ? 'ok' : 'warn');
+        } else {
+          invalidatePlan(s.plan?.state === 'ready' ? 'Preview replaced; preview again.' : (s.plan?.message || 'Preview unavailable; preview again.'));
+        }
+      } else if ((!localPlanNotice || s.plan?.state === 'executing') && s.plan?.state !== 'ready') {
+        const state = s.plan?.state;
+        planStatus(s.plan?.message || 'No plan yet.', ['failed', 'expired'].includes(state) ? 'bad' : (['executing', 'stopped'].includes(state) ? 'warn' : 'muted'));
+      }
     }
+    updatePlanButtons();
     updateTcpControls();
     $('controllerTitle').textContent = config.simulation ? 'Simulation' : 'Bridge';
     $('unlock').hidden = !!config.simulation;
@@ -333,7 +463,6 @@ async function poll() {
     if (config.max_jog_speed && $('speed').max != config.max_jog_speed) $('speed').max = config.max_jog_speed;
     $('conn').textContent = 'connected'; $('conn').className = 'ok';
     const names = Object.keys(config.joint_limits_deg || {}).sort();
-    latestJoints = s.joints;
     buildRows(names);
     for (const n of names) {
       const d = s.joints[n]?.position_deg;
@@ -376,6 +505,11 @@ async function poll() {
     const f = st('feed_rate'); $('feed').textContent = typeof f === 'number' ? f.toFixed(0) : f;
     $('homing').textContent = st('homing_status');
   } catch (e) {
+    if (sequence < appliedPoll) return;
+    appliedPoll = sequence;
+    connected = false;
+    stopJog();
+    invalidatePlan('Connection lost; reconnect and preview again.');
     $('conn').textContent = 'disconnected'; $('conn').className = 'bad';
   }
 }

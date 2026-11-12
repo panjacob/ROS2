@@ -72,14 +72,16 @@ Hardware service and topic commands need a second terminal with ROS and this
 workspace sourced; see [ROS 2 software](docs/06-ros2-software.md#62-fluidnc_bridge-node).
 
 For step 2, open **http://localhost:8080** after the launch starts. In the Joints
-table, enter all five angles under **Plan target [°]**, then click **Plan joint
-motion**. Review the animation in RViz. Click **Execute previewed plan** to move
+table, enter all five angles under **Target [°]**, then click **Preview plan**. Review the animation in RViz. Click **Execute plan** to move
 the simulated robot; the panel reports completion or failure. **STOP** interrupts
 execution. A plan can be executed once within 120 seconds. Moving the arm with
-Go or jog invalidates the plan, so plan again before executing.
+direct movement or jog invalidates the plan, so plan again before executing.
 
 With `use_hardware:=true`, planning and RViz preview still work, but Execute is
 disabled because the FluidNC bridge has no trajectory action controller yet.
+Use **Use current angles** to fill the shared targets before adjusting individual joints.
+The secondary **Direct movement — no collision checking** section sends those targets
+directly, including on hardware; sending does not confirm arrival.
 For a headless run, use `rviz:=false`; change the panel port with `web_port:=8081`.
 
 Run tests: `colcon test --packages-select arm_sim arm_web arm_fluidnc_bridge && colcon test-result --verbose`
