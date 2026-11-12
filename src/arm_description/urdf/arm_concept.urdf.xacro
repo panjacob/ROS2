@@ -1,0 +1,98 @@
+<?xml version="1.0"?>
+<!--
+  Concept arm built from hardware/cad/arm_concept_parts.blend.
+  The STL coordinates are in metres and local to each link's proximal joint.
+  Visuals use those meshes; collision and inertia remain simple approximations.
+  Joint names, axes, origins and limits match arm.urdf.xacro and FluidNC mapping.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="printed_arm_concept">
+
+  <xacro:property name="base_h" value="0.080"/>
+  <xacro:property name="shoulder_h" value="0.050"/>
+  <xacro:property name="upper_len" value="0.200"/>
+  <xacro:property name="fore_len" value="0.180"/>
+  <xacro:property name="wrist_len" value="0.060"/>
+  <xacro:property name="flange_len" value="0.030"/>
+  <xacro:property name="deg" value="${pi / 180.0}"/>
+
+  <!-- STL has no colour information, so each link gets one display material. -->
+  <material name="graphite"><color rgba="0.20 0.24 0.28 1"/></material>
+  <material name="orange"><color rgba="0.95 0.32 0.07 1"/></material>
+
+  <xacro:macro name="box_inertial" params="mass x y z center_z">
+    <inertial>
+      <origin xyz="0 0 ${center_z}"/>
+      <mass value="${mass}"/>
+      <inertia ixx="${mass * (y*y + z*z) / 12}" ixy="0" ixz="0"
+               iyy="${mass * (x*x + z*z) / 12}" iyz="0"
+               izz="${mass * (x*x + y*y) / 12}"/>
+    </inertial>
+  </xacro:macro>
+
+  <xacro:macro name="mesh_link" params="name length width_x width_y mass color">
+    <link name="${name}">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://arm_description/meshes/${name}.stl" scale="1 1 1"/>
+        </geometry>
+        <material name="${color}"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${length / 2}"/>
+        <geometry><box size="${width_x} ${width_y} ${length}"/></geometry>
+      </collision>
+      <xacro:box_inertial mass="${mass}" x="${width_x}" y="${width_y}"
+                          z="${length}" center_z="${length / 2}"/>
+    </link>
+  </xacro:macro>
+
+  <xacro:macro name="rev_joint" params="name parent child z axis lower upper vel">
+    <joint name="${name}" type="revolute">
+      <parent link="${parent}"/>
+      <child link="${child}"/>
+      <origin xyz="0 0 ${z}" rpy="0 0 0"/>
+      <axis xyz="${axis}"/>
+      <limit lower="${lower}" upper="${upper}" velocity="${vel}" effort="5.0"/>
+    </joint>
+  </xacro:macro>
+
+  <link name="world"/>
+  <link name="base_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="package://arm_description/meshes/base_link.stl" scale="1 1 1"/></geometry>
+      <material name="graphite"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${base_h / 2}"/>
+      <geometry><cylinder radius="0.071" length="${base_h}"/></geometry>
+    </collision>
+    <xacro:box_inertial mass="1.0" x="0.142" y="0.174" z="${base_h}"
+                        center_z="${base_h / 2}"/>
+  </link>
+
+  <joint name="world_to_base" type="fixed">
+    <parent link="world"/>
+    <child link="base_link"/>
+  </joint>
+
+  <xacro:mesh_link name="link1" length="${shoulder_h}" width_x="0.106" width_y="0.106" mass="0.30" color="orange"/>
+  <xacro:mesh_link name="link2" length="${upper_len}" width_x="0.062" width_y="0.086" mass="0.25" color="graphite"/>
+  <xacro:mesh_link name="link3" length="${fore_len}" width_x="0.051" width_y="0.071" mass="0.20" color="orange"/>
+  <xacro:mesh_link name="link4" length="${wrist_len}" width_x="0.054" width_y="0.070" mass="0.10" color="graphite"/>
+  <xacro:mesh_link name="link5" length="${flange_len}" width_x="0.064" width_y="0.064" mass="0.05" color="orange"/>
+
+  <xacro:rev_joint name="joint1" parent="base_link" child="link1" z="${base_h}" axis="0 0 1" lower="${-170*deg}" upper="${170*deg}" vel="1.0"/>
+  <xacro:rev_joint name="joint2" parent="link1" child="link2" z="${shoulder_h}" axis="0 1 0" lower="${-90*deg}" upper="${90*deg}" vel="0.5"/>
+  <xacro:rev_joint name="joint3" parent="link2" child="link3" z="${upper_len}" axis="0 1 0" lower="${-135*deg}" upper="${135*deg}" vel="0.7"/>
+  <xacro:rev_joint name="joint4" parent="link3" child="link4" z="${fore_len}" axis="0 1 0" lower="${-100*deg}" upper="${100*deg}" vel="1.0"/>
+  <xacro:rev_joint name="joint5" parent="link4" child="link5" z="${wrist_len}" axis="0 0 1" lower="${-180*deg}" upper="${180*deg}" vel="1.0"/>
+
+  <link name="tool0"/>
+  <joint name="link5_to_tool0" type="fixed">
+    <parent link="link5"/>
+    <child link="tool0"/>
+    <origin xyz="0 0 ${flange_len}"/>
+  </joint>
+</robot>

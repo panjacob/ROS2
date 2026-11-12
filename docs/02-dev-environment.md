@@ -1,9 +1,26 @@
 # 2. Development environment
 
-ROS 2 runs best on Linux. On Windows use **WSL2 with Ubuntu 24.04** and **ROS 2 Jazzy
-Jalisco** (LTS, supported until 2029, MoveIt 2 binaries available). If a newer LTS
-distribution is available and MoveIt 2 supports it, you may use that instead – adjust
-`jazzy` in the commands below.
+ROS 2 runs best on Linux. The repository has been tested on native Ubuntu 26.04
+with ROS 2 Lyrical and MoveIt 2. Ubuntu 24.04 with ROS 2 Jazzy is another option.
+On Windows, use WSL2 with Ubuntu and follow the same Linux build steps.
+
+## Native Ubuntu (without WSL)
+
+Skip section 2.1. Install ROS 2 for your Ubuntu release using the
+official installation guide for
+[Jazzy](https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html) or
+[Lyrical](https://docs.ros.org/en/lyrical/Installation/Ubuntu-Install-Debs.html),
+then follow section 2.3 to build this repository. Install `colcon` and `rosdep`
+if they are missing: `sudo apt install python3-colcon-common-extensions
+python3-rosdep`. Run `sudo rosdep init` once on a new ROS installation, then
+`rosdep update`.
+If ROS 2 is already installed, source its setup file in each new terminal, for example
+`source /opt/ros/lyrical/setup.bash` on the tested machine or
+`source /opt/ros/jazzy/setup.bash` for Jazzy. Confirm with `echo $ROS_DISTRO`.
+Install MoveIt 2 with `sudo apt install ros-$ROS_DISTRO-moveit` after sourcing ROS;
+the workspace's other ROS dependencies are listed in the package manifests and
+installed by `rosdep` in section 2.3.
+You do not need USB passthrough for simulation, MoveIt planning or Execute.
 
 ## 2.1 Install WSL2 + Ubuntu (Windows, PowerShell as admin)
 
@@ -51,15 +68,25 @@ Check: `ros2 run demo_nodes_cpp talker` in one terminal, `ros2 run demo_nodes_py
 
 ```bash
 cd ~/ros2_arm
+source /opt/ros/lyrical/setup.bash  # use jazzy instead if that is what you installed
+rosdep update
 rosdep install --from-paths src --ignore-src -y
 colcon build --symlink-install
 source install/setup.bash
-ros2 launch arm_description display.launch.py
+ros2 launch arm_start arm.launch.py
 ```
 
-In RViz: set *Fixed Frame* = `world`, *Add → RobotModel* (Description Topic `/robot_description`),
-*Add → TF*. Save the config (`File → Save Config As`) into `src/arm_description/rviz/` if you
-want it loaded automatically later.
+In each later terminal, source ROS and `install/setup.bash` again before launching
+the arm or using ROS CLI commands.
+
+Open http://localhost:8080. Enter five
+joint targets, click **Plan joint motion**, inspect the RViz preview, then click
+**Execute previewed plan**. STOP interrupts the motion. These commands work on
+native Ubuntu and WSL2.
+
+The launch opens RViz with the repository's configuration and the planned
+trajectory display. For a display-only preview with joint sliders instead,
+stop the launch with Ctrl+C and run `ros2 launch arm_description display.launch.py`.
 
 ## 2.4 Connecting to the TinyBee
 

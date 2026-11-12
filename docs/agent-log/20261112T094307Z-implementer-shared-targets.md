@@ -1,0 +1,13 @@
+ID: 20261112T094307Z-implementer-shared-targets
+
+## Problem description
+
+Redesign the arm web interface around one target angle column, remove per-row Go actions, clarify planned versus direct movement, and prevent stale previews from becoming executable after target or command changes.
+
+## How did you manage to tackle the problem?
+
+Read AGENTS.md, architecture/software/safety/roadmap documentation, arm_web package/setup metadata, index.html, joint_planning.py, web_viewer.py and relevant tests. Applied the independent designer’s concrete layout to src/arm_web/web/index.html: blank shared targets, Use current angles / Preview plan / Execute plan, disclosed direct movement without collision checking, joints before TCP, disclosed TCP settings and gamepad mapping, accessible target/jog labels and focus styles, horizontal table overflow. Added frontend finite/limit validation, preview revision and matching-server-state guards, fresh complete joint-state gating, disconnected action guards, and local jog cancellation on STOP. Updated README.md and docs/06-ros2-software.md labels and workflow descriptions. Backend interfaces were unchanged; existing user changes in docs/02-dev-environment.md and docs/03-electronics.md were untouched.
+
+## Did it solve the problem? If not what was wrong?
+
+Implemented the requested design. node --check passed. Bounded actual-script Node VM mock checks passed for shared direct targets, blank/nonfinite/out-of-limit rejection, stale/incomplete/nonfinite/elapsed joint state, disconnected action guards, late planning replies after edit/STOP, and STOP zero-jog/timer cancellation. With /opt/ros/lyrical/setup.bash sourced, colcon build --symlink-install --packages-up-to arm_web passed with the existing setuptools tests_require warning. colcon test --packages-select arm_web exited 5 because its current package configuration discovers zero tests; colcon test-result --verbose reported zero tests. Direct PYTHONPATH="src/arm_web:${PYTHONPATH:-}" python3 -m pytest -q src/arm_web/test passed 11 tests. An initial direct pytest invocation replaced ROS PYTHONPATH and could not import sensor_msgs; corrected invocation passed. Scoped git diff --check passed with cr-at-eol because existing documentation uses CRLF. Independent reviewer confirmed the freshness correction and checked actual source/Node behavior. Playwright browser fixture was prepared at /tmp/arm_ui_browser_test.js but could not run: shell Chromium failed restricted socket/crashpad setup; host runtime launch hung and was aborted. No screenshot, real-browser interaction result, ROS runtime launch, transport/dynamics or physical-hardware validation is claimed.
