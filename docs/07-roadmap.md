@@ -35,6 +35,8 @@ Work in small, testable phases. Do not move on until the exit criteria pass.
 - [ ] `arm_moveit_config` generated ([06](06-ros2-software.md#63-adding-moveit-2))
 - [ ] Plans executed in simulation (mock hardware)
 - [ ] `arm_hardware` ros2_control interface implemented
+- [ ] FluidNC bridge `FollowJointTrajectory` action validated on the real arm (implemented and
+      tested offline against a fake FluidNC only; see [06](06-ros2-software.md#trajectory-execution-on-hardware))
 - [ ] MoveIt executes plans on the real arm at reduced speed
 
 ## Phase 5 – Gripper & applications

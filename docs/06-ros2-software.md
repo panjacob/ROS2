@@ -31,19 +31,80 @@ Source: [fluidnc_bridge.py](../src/arm_fluidnc_bridge/arm_fluidnc_bridge/fluidnc
 | `~/feed_rate` (pub) | `std_msgs/Float64` | Current feed rate [deg/min] from the `FS`/`F` status field |
 | `~/spindle_speed` (pub) | `std_msgs/Float64` | Current spindle speed from the `FS` status field |
 | `~/limit_switches` (pub) | `std_msgs/String` | Triggered pins from `Pn` (e.g. `XYZ`, probe `P`); empty when none |
-| `joint_command` (sub) | `sensor_msgs/JointState` | Absolute target [rad] for named joints, moved at `max_feed` |
-| `joint_trajectory` (sub) | `trajectory_msgs/JointTrajectory` | Points sent as `G1` segments, feed derived from `time_from_start` |
-| `jog` (sub) | `sensor_msgs/JointState` | Velocity jog: `velocity` [rad/s] per named joint (others 0). Must be re-sent within `jog_timeout`; zero/stale → jog cancel |
-| `~/home` (srv) | `std_srvs/Trigger` | `$H` |
+| `joint_command` (sub) | `sensor_msgs/JointState` | Absolute target [rad] for named joints, moved at `max_feed` (ignored while a trajectory goal is active) |
+| `joint_trajectory` (sub) | `trajectory_msgs/JointTrajectory` | Unconfirmed legacy path: points sent as `G1` segments, feed derived from `time_from_start`, no limit checks or completion (ignored while a trajectory goal is active). Prefer the action |
+| `jog` (sub) | `sensor_msgs/JointState` | Velocity jog: `velocity` [rad/s] per named joint (others 0). Must be re-sent within `jog_timeout`; zero/stale → jog cancel. Ignored while a trajectory goal is active |
+| `/arm_controller/follow_joint_trajectory` (action) | `control_msgs/FollowJointTrajectory` | MoveIt execution on the real arm, see [Trajectory execution](#trajectory-execution-on-hardware) |
+| `~/trajectory_status` (pub, latched) | `std_msgs/String` | Armed / executing / result / disarm reason of trajectory execution |
+| `~/home` (srv) | `std_srvs/Trigger` | `$H` (refused while a trajectory goal is active) |
 | `~/home_<joint>` (srv) | `std_srvs/Trigger` | Endstop homing of one joint (`homing_joints`): seek left to the switch, then right to the switch (each with slow re-touch); the middle becomes 0° |
 | `~/homing_status` (pub, latched) | `std_msgs/String` | Homing progress / result text |
-| `~/unlock` (srv) | `std_srvs/Trigger` | `$X` |
-| `~/stop` (srv) | `std_srvs/Trigger` | Abort homing, cancel jog, clear queue, feed hold, then soft reset when stopped |
+| `~/unlock` (srv) | `std_srvs/Trigger` | `$X`; also the deliberate re-arm of trajectory execution after STOP or a fault. Arms only after `$X` is answered `ok` and a status report requested afterwards is not `Alarm`; otherwise (error, no `ok` within ~3 s, still Alarm, STOP meanwhile) it fails and execution stays disarmed. Refused while a STOP is still waiting for the arm to stop. Never homes |
+| `~/stop` (srv) | `std_srvs/Trigger` | Abort homing, cancel jog, abort the trajectory goal, drop queued lines, feed hold, then soft reset once fresh status reports confirm the stop; disarms trajectory execution until `~/unlock` |
 
 Parameters: see [fluidnc_bridge.yaml](../src/arm_start/config/fluidnc_bridge.yaml).
+`arm.launch.py` also passes `robot_description`; joint position and velocity limits for
+trajectory goals come from it (without it every goal is rejected).
 
 Flow control: one G-code line at a time, wait for `ok`/`error` (simple send-response protocol).
-Real-time characters (`?`, `!`, `0x18`) bypass the queue.
+Real-time characters (`?`, `!`, `0x18`, `0x85`) bypass the queue. Lines queued before a STOP
+are dropped, never sent later. The bridge runs a multi-threaded executor: trajectory
+execution waits in its own callback while serial reading, status and STOP keep running.
+
+### Trajectory execution on hardware
+
+> Implemented and tested only offline against a fake FluidNC (unit tests); **not yet run on
+> the physical arm.** First runs: reduced speed (panel plans at 10 %), area clear, power
+> cut-off in reach — software STOP is not an emergency stop (see [08](08-safety.md)).
+
+* **Acceptance.** One goal at a time (a second is rejected). The goal then aborts with
+  `INVALID_GOAL`/`INVALID_JOINTS` without motion unless: execution is armed; the connection is
+  up; joint limits are known; no homing, jog (active or freshly requested) or queued command;
+  a fresh status report (within `status_timeout`) says `Idle` with a position. The trajectory
+  must name exactly joint1…joint5 (any order, no duplicates), have ≥ 1 point, finite
+  positions within URDF limits, `time_from_start` finite and strictly increasing, a point at
+  t = 0 within `trajectory_start_tolerance` of the measured position, per-joint speed ≤ URDF
+  velocity × 1.05 and vector feed ≤ `max_feed`. Too fast segments are **rejected, not
+  clamped**, so timing never silently deviates.
+* **Unsupported (rejected):** `multi_dof_trajectory`, `path_tolerance`, component tolerances,
+  efforts, a `header.stamp` more than 0.5 s in the future. Velocities/accelerations are only
+  checked for size/finiteness (FluidNC plans its own acceleration). Honoured: `goal_tolerance`
+  positions (> 0, else `trajectory_goal_tolerance`), `goal_time_tolerance` (> 0 replaces the
+  default time allowance).
+* **Execution.** Radians → degrees only here. `G21 G90 G94`, then one absolute `G1` per point
+  with feed = segment length / segment duration (a segment without motion becomes `G4`).
+* **Feedback** at `status_rate`: desired (linear interpolation of the points), actual (WPos)
+  and error.
+* **Completion.** `ok` only means "queued". Success requires every line acknowledged, two
+  later status reports, FluidNC `Idle` and every joint within its goal tolerance of the last
+  point. A final position mismatch aborts with `GOAL_TOLERANCE_VIOLATED` and disarms.
+* **Failure** (abort, then STOP sequence and disarm): rejected/unacknowledged line, connection
+  lost, stale status, any state other than `Run`/`Idle` (Alarm, Hold, Door…), or no finish
+  within `duration × trajectory_time_scaling + trajectory_time_margin` (defaults × 1.5 + 2 s).
+  MoveIt's own duration monitoring (`moveit_controllers.yaml`: × 1.5 + 1 s) normally fires
+  first: a too-slow trajectory then ends as a MoveIt **cancel** (goal canceled, STOP sequence,
+  execution disarmed) rather than a bridge timeout abort.
+* **Cancel / STOP.** Cancel or `~/stop` (also during jog / go-to) → jog cancel + feed hold,
+  queued lines dropped, then soft reset (`0x18`) only after FluidNC confirms the stop: two
+  consecutive status reports received *after* the hold show `Hold:0`/`Idle` (or any report
+  shows `Alarm`); the bridge polls `?` meanwhile. The cached state is not trusted, because
+  right after streaming starts it may still show the pre-motion `Idle`. If no confirmation
+  arrives within 5 s (e.g. status lost) the reset is sent anyway — this can abort motion
+  (FluidNC Alarm, position lost); it is logged and published on `~/trajectory_status`, and the
+  position must be verified or re-homed before re-arming. The goal ends canceled (cancel) or
+  aborted (`~/stop`). Execution stays **disarmed** until the operator presses
+  **Unlock / re-arm** (`~/unlock`); the bridge starts armed.
+  Until the reset is sent every motion source is refused (`joint_command`, `joint_trajectory`,
+  jog, `~/home`, `~/home_<joint>`, `~/unlock`, trajectory goals) and no queued line is written.
+  STOP drops the current jog velocity: jog stays inhibited until a zero-velocity jog message
+  (gamepad release) or a pause of at least `jog_timeout` in jog messages, so a stick or button
+  held through STOP does not restart motion. The same latch applies to a non-zero jog received
+  while a trajectory goal is active or homing runs (refused messages still count as the jog
+  stream), so a stick held through a goal cancel/fault does not jog afterwards.
+  Jog/go-to/homing need no Unlock afterwards.
+* **Limits.** Send-response streaming and FluidNC acceleration make timing approximate;
+  intermediate positions are not checked against a path tolerance. The simulator's STOP
+  does not latch/disarm.
 
 ### Examples
 
@@ -100,7 +161,7 @@ Check the switch on the web page: the "Endstops" card shows a red **PRESSED** la
 `ros2 launch arm_start arm.launch.py use_hardware:=true`, then open
 http://localhost:8080 (from Windows too).
 
-- STOP / Unlock alarm, hold − / + to jog a joint, one shared "Target" column for planning or direct movement; **Joint units** selects degrees (default) or radians for joint positions, targets, gauges and jog speed, "Home" for `homing_joints`.
+- STOP / Unlock / re-arm, hold − / + to jog a joint, one shared "Target" column for planning or direct movement; **Joint units** selects degrees (default) or radians for joint positions, targets, gauges and jog speed, "Home" for `homing_joints`. On hardware the Bridge card also shows the latched trajectory execution status (armed / executing / result / disarmed); **Unlock / re-arm** clears a FluidNC alarm and re-arms plan execution after STOP or a fault.
 - Changing joint units preserves physical targets, jog speed and an unchanged ready plan. TCP angles remain in degrees; the HTTP API still uses degrees and degrees/s.
 - "Position gauge" bar per joint: −180° … 0 … +180° (−π … 0 … +π rad), the dot shows the current position (red and pinned to the end if outside).
 - TCP position: the panel reads the `world` → `tool0` transform from TF and displays
@@ -146,7 +207,7 @@ ros2 launch arm_start arm.launch.py
 
 Open http://localhost:8080, enter all five angles in **Target** (degrees by default; choose radians with **Joint units**), then
 click **Preview plan**. After checking the RViz animation, click **Execute plan**. The panel shows the execution result. STOP interrupts the
-simulated movement. Start a new terminal with the ROS and workspace setup sourced
+movement. Start a new terminal with the ROS and workspace setup sourced
 before using `ros2 topic` or `ros2 service` commands.
 
 The launch starts `move_group` with the `arm` chain (`base_link` → `tool0`), OMPL,
@@ -156,23 +217,29 @@ trajectories are published to `/display_planned_path` and animated in RViz.
 The panel reports missing/stale joint states, out-of-limit goals, collisions, and
 planning failures. Planning itself does not move the arm. **Execute plan**
 passes the stored trajectory to MoveIt's `/execute_trajectory` action. MoveIt
-uses the simulator's `/arm_controller/follow_joint_trajectory` action to follow
+uses the `/arm_controller/follow_joint_trajectory` action — served by the simulator,
+or by the FluidNC bridge with `use_hardware:=true` — to follow
 its timed points and reports completion or failure to the panel. A plan can be
 executed once within 120 seconds; execution is rejected if the current joints
-have moved from the plan's start. STOP cancels the action and stops the simulator.
+have moved from the plan's start. STOP cancels the action and stops the controller.
+The panel plans at 10 % velocity/acceleration scaling on hardware and 30 % in simulation
+(`web_viewer` parameters `max_velocity_scaling`/`max_acceleration_scaling`, set by the launch).
 The disclosed **Direct movement — no collision checking** action uses the same complete
 target pose as planning and sends it directly; a sent command does not confirm arrival.
-Use **Use current angles** before changing individual joints. Direct movement, jog,
+Use **Use current angles** before changing individual joints. A blank target field
+defaults to that joint's current angle (filled into the field) only when joint state
+is fresh (connected, at most 2 s old, all joints finite) and within the joint limits;
+otherwise the request is rejected. Direct movement, jog,
 homing, STOP and target edits invalidate the local preview; late planning replies
 cannot re-enable execution after those changes.
 
 The self-collision exclusions in `src/arm_moveit_config/config/arm.srdf.xacro` cover
 adjacent links only. The URDF collision shapes are approximations, so revalidate
 them against the final CAD before relying on collision checks with hardware.
-Execution is enabled only in simulation. The FluidNC bridge currently accepts a
-`/joint_trajectory` topic but has no action controller that confirms completion;
-the panel therefore disables Execute with `use_hardware:=true`. Cartesian/TCP
-goal planning is also not configured yet.
+Execution on hardware goes through the bridge's trajectory action (see
+[Trajectory execution on hardware](#trajectory-execution-on-hardware)); it has been
+tested only offline, not on the physical arm. After STOP or a fault the bridge rejects
+goals until **Unlock / re-arm**. Cartesian/TCP goal planning is not configured yet.
 
 ## 6.5 `ros2_control` hardware interface (recommended upgrade)
 
@@ -200,7 +267,8 @@ node accepts `/joint_command`, `/jog`, and the
 `/arm_controller/follow_joint_trajectory` action; it publishes `/joint_states`.
 The panel's direct movement, hold-to-jog, gamepad, Execute, and STOP
 controls work without the board; RViz shows the same positions. The simulation has no
-endstops or physical dynamics. `use_hardware:=true` selects the FluidNC bridge instead.
+endstops or physical dynamics. `use_hardware:=true` selects the FluidNC bridge instead;
+it serves the same action name, so MoveIt's controller configuration is shared.
 
 The default model is `arm_concept.urdf.xacro`, which uses the meshes exported from
 Blender. Pass `model:=arm.urdf.xacro` to either launch file to inspect the original

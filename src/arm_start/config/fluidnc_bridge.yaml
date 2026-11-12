@@ -17,6 +17,14 @@ fluidnc_bridge:
     ack_timeout: 10.0
     homing_timeout: 120.0
 
+    # FollowJointTrajectory action /arm_controller/follow_joint_trajectory (MoveIt execution).
+    # Joint limits come from robot_description (passed by arm.launch.py).
+    status_timeout: 0.5               # s, status reports older than this make the state stale
+    trajectory_start_tolerance: 0.02  # rad, a t=0 point must be this close to the measured state
+    trajectory_goal_tolerance: 0.01   # rad, final error allowed once FluidNC reports Idle
+    trajectory_time_scaling: 1.5      # allowed time = duration * scaling + margin
+    trajectory_time_margin: 2.0       # s (a goal_time_tolerance > 0 replaces both)
+
     # Velocity jog (topic "jog"): segments sent at jog_rate, stop after jog_timeout s without messages
     jog_rate: 20.0
     jog_timeout: 0.3

@@ -5,7 +5,6 @@
   <description>Simple joint motion simulator for the arm control panel.</description>
   <maintainer email="you@example.com">TODO</maintainer>
   <license>MIT</license>
-  <buildtool_depend>ament_python</buildtool_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>control_msgs</exec_depend>

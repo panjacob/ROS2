@@ -5,6 +5,8 @@
 
 Web page (state, jog, go-to, homing, gamepad) at http://localhost:8080 (web_port:=...).
 A gamepad connected to the browser always works (browser -> /joy -> joy_teleop -> /jog).
+MoveIt executes plans through /arm_controller/follow_joint_trajectory, served by the simulator
+or, with use_hardware:=true, by the FluidNC bridge (planned at 0.1 speed scaling, 0.3 in sim).
 """
 
 import os
@@ -31,6 +33,9 @@ def generate_launch_description():
         "'/fluidnc_bridge' if '", use_hardware, "' == 'true' else '/arm_sim'"])
     simulation = PythonExpression([
         "'false' if '", use_hardware, "' == 'true' else 'true'"])
+    # Planned motion runs slower on the real arm until it has been validated there.
+    plan_scaling = PythonExpression([
+        "'0.1' if '", use_hardware, "' == 'true' else '0.3'"])
 
     xacro_file = PathJoinSubstitution(
         [FindPackageShare('arm_description'), 'urdf', model])
@@ -67,7 +72,7 @@ def generate_launch_description():
         package='arm_fluidnc_bridge',
         executable='fluidnc_bridge',
         name='fluidnc_bridge',
-        parameters=[bridge_config],
+        parameters=[bridge_config, {'robot_description': robot_description}],
         output='screen',
     )
     hardware = GroupAction(
@@ -94,7 +99,8 @@ def generate_launch_description():
             executable='move_group',
             name='move_group',
             parameters=[moveit_config.to_dict(), {
-                'allow_trajectory_execution': ParameterValue(simulation, value_type=bool),
+                # Both backends serve /arm_controller/follow_joint_trajectory.
+                'allow_trajectory_execution': True,
             }],
             output='screen',
         ),
@@ -121,6 +127,8 @@ def generate_launch_description():
                 'simulation': ParameterValue(simulation, value_type=bool),
                 'tcp_storage_path': tcp_storage_path,
                 'robot_description': robot_description,
+                'max_velocity_scaling': ParameterValue(plan_scaling, value_type=float),
+                'max_acceleration_scaling': ParameterValue(plan_scaling, value_type=float),
             }],
             output='screen',
         ),

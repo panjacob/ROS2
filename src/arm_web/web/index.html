@@ -58,7 +58,7 @@
 <div class="row">
   <h1>Arm control</h1>
   <button class="stop" onclick="stopArm()">STOP</button>
-  <button id="unlock" onclick="post('/api/unlock', {})">Unlock alarm</button>
+  <button id="unlock" onclick="post('/api/unlock', {})" title="Clear FluidNC alarm and re-arm plan execution after STOP or a fault">Unlock / re-arm</button>
   <span id="conn" class="muted">connecting…</span>
 </div>
 <p id="msg" role="status" aria-live="polite"></p>
@@ -70,6 +70,7 @@
     <span>Limit pins: <b id="pins">–</b></span>
     <span>Feed: <b id="feed">–</b></span>
     <span>Homing: <b id="homing">–</b></span>
+    <span id="executionStatusRow">Execution: <b id="trajectoryStatus">–</b></span>
   </div>
 </div>
 
@@ -80,7 +81,7 @@
 
 <div class="card" aria-labelledby="jointsTitle">
   <h2 id="jointsTitle">Joint targets</h2>
-  <p class="muted hint">Set one target pose, preview it in RViz, then execute in simulation. Choose joint units below; TCP angles remain in degrees.</p>
+  <p class="muted hint">Set one target pose, preview it in RViz, then execute it. Choose joint units below; TCP angles remain in degrees.</p>
   <div class="row" style="margin-bottom:.5em">
     <label>Joint units <select id="jointUnits" onchange="setJointUnits(this.value)">
       <option value="deg">Degrees (°)</option><option value="rad">Radians (rad)</option>
@@ -101,7 +102,7 @@
     <button class="primary" id="planButton" onclick="planJoints()">Preview plan</button>
     <button class="primary" id="executeButton" onclick="executeJoints()" disabled>Execute plan</button>
   </div>
-  <p id="planStatus" class="muted" role="status" aria-live="polite">Enter every target angle, or use current angles to start.</p>
+  <p id="planStatus" class="muted" role="status" aria-live="polite">Enter target angles; blank targets keep the current angle (fresh joint state required).</p>
   <p class="muted hint" id="executionHint">Planning checks joint limits and collisions. Review the RViz animation before executing.</p>
   <details class="direct">
     <summary>Direct movement — no collision checking</summary>
@@ -353,17 +354,34 @@ function readTargets() {
   const names = Object.keys(config.joint_limits_deg || {}).sort();
   if (!names.length) { planStatus('Waiting for robot model.', 'bad'); return null; }
   const target = {};
+  const defaulted = [];
   for (const n of names) {
     const input = $('target_' + n);
     const value = input?.value.trim();
-    const angle = input ? captureTarget(n) : null;
+    let angle = input ? captureTarget(n) : null;
     const [lower, upper] = config.joint_limits_deg[n];
-    if (!value || angle == null || !Number.isFinite(angle) || angle < lower || angle > upper) {
+    // A blank target holds that joint at its current angle, only from fresh state.
+    // Unparsable number-input text also reads as '' but sets badInput; reject it.
+    if (input && !value && !input.validity?.badInput) {
+      if (!freshJointState()) {
+        planStatus(`Enter a target for ${n} or wait for fresh joint state.`, 'bad');
+        input.focus();
+        return null;
+      }
+      angle = latestJoints[n]?.position_deg;
+      defaulted.push(n);
+    }
+    if (!input || angle == null || !Number.isFinite(angle) || angle < lower || angle > upper) {
       planStatus(`Enter a finite target for ${n} within ${displayAngle(lower).toFixed(angleDigits())}${angleSymbol()} to ${displayAngle(upper).toFixed(angleDigits())}${angleSymbol()}.`, 'bad');
       input?.focus();
       return null;
     }
     target[n] = angle;
+  }
+  for (const n of defaulted) {
+    const input = $('target_' + n);
+    input.value = String(displayAngle(target[n]));
+    targetDegrees.set(n, {text: input.value.trim(), degrees: target[n]});
   }
   return target;
 }
@@ -532,9 +550,11 @@ async function poll() {
     latestJointsAge = s.joints_age;
     latestJointsReceived = Date.now();
     $('executeButton').hidden = !config.execution_available;
-    $('executionHint').textContent = config.execution_available
-      ? 'Planning checks joint limits and collisions. Review the RViz animation before executing in simulation.'
-      : 'Plan preview only; execution unavailable on hardware. Review the RViz animation. Direct movement below does not use collision checking.';
+    $('executionHint').textContent = !config.execution_available
+      ? 'Plan preview only; execution unavailable. Review the RViz animation. Direct movement below does not use collision checking.'
+      : (config.simulation
+        ? 'Planning checks joint limits and collisions. Review the RViz animation before executing in the simulator.'
+        : `Executes on the REAL ARM at ${Math.round((config.velocity_scaling || 0) * 100)}% speed. Review the RViz animation, keep the area clear and power cut-off within reach; STOP is not an emergency stop.`);
     if (revision === planRevision && !planPending && sequence > planPollAfter) {
       if (planId) {
         if (s.plan?.state === 'ready' && s.plan.plan_id === planId) {
@@ -588,6 +608,10 @@ async function poll() {
         }).join('');
     const f = st('feed_rate'); $('feed').textContent = typeof f === 'number' ? f.toFixed(0) : f;
     $('homing').textContent = st('homing_status');
+    $('executionStatusRow').hidden = !!config.simulation;
+    const ts = st('trajectory_status');
+    $('trajectoryStatus').textContent = ts;
+    $('trajectoryStatus').className = /^(disarmed|abort)/.test(ts) ? 'bad' : '';
   } catch (e) {
     if (sequence < appliedPoll) return;
     appliedPoll = sequence;

@@ -6,13 +6,14 @@ POST /api/jog       {"joint1": deg_per_s, ...}   velocity jog (send repeatedly, 
 POST /api/goto      {"joint1": deg, ...}         absolute move -> joint_command
 POST /api/home      {"joint": "joint1"}          endstop homing of one joint
 POST /api/stop      {}                           abort everything
-POST /api/unlock    {}                           clear FluidNC alarm
+POST /api/unlock    {}                           clear FluidNC alarm ($X) and re-arm execution;
+                                                 fails unless the bridge confirms $X
 POST /api/joy       {"axes": [...], "buttons": [...]}  browser gamepad -> /joy
 POST /api/tcp/save  {"name": "gripper", "x_mm": 0, ..., "yaw_deg": 0}
 POST /api/tcp/select {"name": "gripper"}
 POST /api/tcp/delete {"name": "gripper"}
 POST /api/plan      {"joint1": deg, ..., "joint5": deg}  plan only, preview in RViz
-POST /api/execute   {"plan_id": "..."}      execute previewed plan in simulation
+POST /api/execute   {"plan_id": "..."}      execute previewed plan (simulator or FluidNC bridge)
 """
 
 import json
@@ -50,7 +51,9 @@ STATUS_TOPICS = {
     'feed_rate': Float64,
     'spindle_speed': Float64,
     'homing_status': String,
+    'trajectory_status': String,
 }
+LATCHED_STATUS = ('homing_status', 'trajectory_status')
 
 PLAN_ERRORS = {
     MoveItErrorCodes.FAILURE: 'Planning failed; inspect MoveIt logs for details.',
@@ -165,6 +168,13 @@ class WebViewer(Node):
         self.home_pins = list(self.declare_parameter('home_pins', ['X']).value)
         self.max_jog_speed = float(self.declare_parameter('max_jog_speed', 360.0).value)
         self.reference_frame = self.declare_parameter('reference_frame', 'world').value
+        self.velocity_scaling = float(self.declare_parameter('max_velocity_scaling', 0.3).value)
+        self.acceleration_scaling = float(
+            self.declare_parameter('max_acceleration_scaling', 0.3).value)
+        for name, value in (('max_velocity_scaling', self.velocity_scaling),
+                            ('max_acceleration_scaling', self.acceleration_scaling)):
+            if not math.isfinite(value) or not 0.0 < value <= 1.0:
+                raise ValueError(f'{name} must be in (0, 1], got {value}')
         tcp_storage_path = self.declare_parameter(
             'tcp_storage_path', '~/.config/ros2_arm/tcps.json').value
         self.tcps = TcpRegistry(tcp_storage_path)
@@ -191,7 +201,7 @@ class WebViewer(Node):
         self.create_subscription(JointState, 'joint_states', self.store.update_joints, 10)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         for key, msg_type in STATUS_TOPICS.items():
-            qos = latched if key == 'homing_status' else 10
+            qos = latched if key in LATCHED_STATUS else 10
             self.create_subscription(
                 msg_type, f'{bridge_ns}/{key}',
                 lambda m, k=key: self.store.update_status(k, m.data), qos)
@@ -214,7 +224,8 @@ class WebViewer(Node):
             'endstops': dict(zip(self.home_joints, self.home_pins)),
             'max_jog_speed': self.max_jog_speed,
             'simulation': self.simulation,
-            'execution_available': self.simulation,
+            'execution_available': True,
+            'velocity_scaling': self.velocity_scaling,
             'reference_frame': self.reference_frame,
             'joint_limits_deg': {
                 name: [math.degrees(lo), math.degrees(hi)]
@@ -359,8 +370,8 @@ class WebViewer(Node):
         goal.request.pipeline_id = 'ompl'
         goal.request.allowed_planning_time = 5.0
         goal.request.num_planning_attempts = 1
-        goal.request.max_velocity_scaling_factor = 0.3
-        goal.request.max_acceleration_scaling_factor = 0.3
+        goal.request.max_velocity_scaling_factor = self.velocity_scaling
+        goal.request.max_acceleration_scaling_factor = self.acceleration_scaling
         goal.request.start_state.is_diff = True
         constraints = Constraints()
         for name, position in target.items():
@@ -416,11 +427,9 @@ class WebViewer(Node):
                 'duration': seconds,
             }
         return True, (f'Plan ready: {len(points)} points, {seconds:.1f} s. '
-                      'Preview in RViz; ready to execute in simulation.')
+                      'Preview in RViz; ready to execute.')
 
     def execute(self, body):
-        if not self.simulation:
-            return False, 'Execution is available only in simulation; the hardware bridge has no trajectory action controller.'
         plan_id = body.get('plan_id')
         with self._plan_state_lock:
             record = self._plan_record
@@ -471,14 +480,19 @@ class WebViewer(Node):
             if response is None:
                 accepted.cancel_goal_async()
                 self.call('stop')
-                return False, 'Execution timed out; simulator stopped.'
+                return False, 'Execution timed out; controller stopped.'
         except Exception as exc:
             self.get_logger().error(f'MoveIt execution failed: {exc}')
             self.call('stop')
-            return False, 'Execution communication failed; simulator stopped.'
+            return False, 'Execution communication failed; controller stopped.'
         code = response.result.error_code.val
         if code != MoveItErrorCodes.SUCCESS:
-            return False, PLAN_ERRORS.get(code, f'MoveIt execution failed (code {code}).')
+            message = PLAN_ERRORS.get(code, f'MoveIt execution failed (code {code}).')
+            # The bridge explains hardware faults/disarming on its latched trajectory_status.
+            detail = self.store.snapshot()['status'].get('trajectory_status')
+            if detail and detail['age'] < 30.0:
+                message = f"{message} Controller: {detail['value']}"
+            return False, message
         return True, 'Planned trajectory executed successfully.'
 
     def stop(self):

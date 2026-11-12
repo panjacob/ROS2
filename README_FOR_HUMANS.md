@@ -4,10 +4,9 @@ ros2 launch arm_start arm.launch.py use_hardware:=false
 ros2 launch arm_start arm.launch.py use_hardware:=true
 
 ## Start symulacji
-
+`source install/setup.bash` -> done in `install/setup.bash`
 ```bash
 colcon build --symlink-install
-source install/setup.bash
 ros2 launch arm_start arm.launch.py
 ```
 

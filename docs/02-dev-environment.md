@@ -79,6 +79,25 @@ ros2 launch arm_start arm.launch.py
 In each later terminal, source ROS and `install/setup.bash` again before launching
 the arm or using ROS CLI commands.
 
+Optionally, source the workspace automatically in new terminals (adjust the
+path to your workspace). Place this after the line in `~/.bashrc` that sources
+`/opt/ros/<distro>/setup.bash`; it takes effect in new terminals or after
+`source ~/.bashrc`:
+
+```bash
+echo '[ -f ~/ros2_arm/install/setup.bash ] && source ~/ros2_arm/install/setup.bash' >> ~/.bashrc
+```
+
+After pulling changes or adding new packages or files (meshes, launch files,
+URDF/Xacro), rebuild the whole workspace from its root with
+`colcon build --symlink-install` and source `install/setup.bash` again.
+`--symlink-install` only reflects edits to files that are already installed.
+Typical symptoms of a stale build are
+`PackageNotFoundError: package 'arm_moveit_config' not found` from
+`ros2 launch arm_start arm.launch.py`, or missing arm meshes in RViz. To check
+for missing system dependencies, run
+`rosdep check --from-paths src --ignore-src -r`.
+
 Open http://localhost:8080. Enter five
 joint targets, click **Plan joint motion**, inspect the RViz preview, then click
 **Execute previewed plan**. STOP interrupts the motion. These commands work on

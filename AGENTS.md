@@ -1,3 +1,5 @@
+Ignore this if you are copilot. This is for codex users(n000bs)!
+
 # Robotyczna ręka
 
 ROS 2 control for a five-DOF stepper arm using MKS TinyBee/ESP32 + FluidNC;

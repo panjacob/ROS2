@@ -8,11 +8,12 @@ const html = fs.readFileSync(path.join(__dirname, '../web/index.html'), 'utf8');
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 new vm.Script(script); // syntax check, including initialization and polling code
 const elements = new Map();
+let focused = null;
 function element(id) {
   if (!elements.has(id)) elements.set(id, {
     _value: '', get value() { return this._value; }, set value(v) { this._value = String(v); },
-    textContent: '', style: {}, disabled: false,
-    setAttribute(k, v) { this[k] = v; }, focus() {}, replaceChildren() {}, append() {},
+    textContent: '', style: {}, disabled: false, validity: {badInput: false},
+    setAttribute(k, v) { this[k] = v; }, focus() { focused = this; }, replaceChildren() {}, append() {},
   });
   return elements.get(id);
 }
@@ -69,12 +70,45 @@ async function main() {
   targets(Math.PI, -Math.PI / 2);
   close(read().joint1, 180); close(read().joint2, -90);
   targets(Math.PI - 1e-10, 0); assert.ok(read().joint1 < 180);
-  for (const invalid of ['', 'NaN', 'Infinity', '-Infinity', 'abc', '1e309', '4']) {
+  for (const invalid of ['NaN', 'Infinity', '-Infinity', 'abc', '1e309', '4']) {
     targets(invalid, 0); assert.equal(read(), null);
     units('deg'); assert.equal(read(), null); units('rad'); assert.equal(read(), null);
   }
-  targets('', ''); units('deg');
-  assert.equal(element('target_joint1').value, ''); assert.equal(read(), null);
+  // Blank + fresh state: the current angle is used and shown in the active unit.
+  targets('', 0.5);
+  assert.deepEqual(Object.keys(read()), ['joint1', 'joint2']);
+  close(read().joint1, -30); close(read().joint2, 0.5 * 180 / Math.PI);
+  close(Number(element('target_joint1').value), -Math.PI / 6);
+  units('deg'); assert.equal(Number(element('target_joint1').value), -30);
+  targets('', ''); assert.deepEqual(read(), {joint1: -30, joint2: 0});
+  assert.equal(element('target_joint1').value, '-30'); assert.equal(element('target_joint2').value, '0');
+  // Unparsable number-input text ('' with badInput) + fresh state is rejected, not filled.
+  targets('', 0); element('target_joint1').validity = {badInput: true}; focused = null;
+  const sentBefore = requests.length;
+  assert.equal(read(), null);
+  assert.match(element('planStatus').textContent, /Enter a finite target for joint1 within -180.00° to 180.00°/);
+  assert.equal(focused, element('target_joint1'));
+  assert.equal(element('target_joint1').value, '');
+  await run('moveDirectly()'); await run('planJoints()');
+  assert.equal(requests.length, sentBefore);
+  assert.equal(element('target_joint1').value, '');
+  element('target_joint1').validity = {badInput: false};
+  // Blank + stale state is rejected; non-blank targets do not depend on freshness.
+  run('latestJointsAge = 3');
+  targets('', 10); assert.equal(read(), null);
+  assert.equal(element('planStatus').textContent, 'Enter a target for joint1 or wait for fresh joint state.');
+  assert.equal(element('target_joint1').value, '');
+  targets(10, 20); assert.deepEqual(read(), {joint1: 10, joint2: 20});
+  run('connected = false'); targets(10, ''); assert.equal(read(), null); run('connected = true');
+  run('latestJointsAge = 0; latestJointsReceived = Date.now()');
+  // Blank + current angle outside limits is rejected, not clamped.
+  run('latestJoints.joint2.position_deg = 95');
+  targets(10, ''); assert.equal(read(), null);
+  assert.match(element('planStatus').textContent, /Enter a finite target for joint2 within -90.00° to 90.00°/);
+  assert.equal(element('target_joint2').value, '');
+  run('latestJoints.joint2.position_deg = 0');
+  // Non-blank out-of-range input keeps the existing limit rejection.
+  targets(10, 91); assert.equal(read(), null);
   targets(-45, 0); ready();
   targets(-44, 0); assert.equal(run('planReady'), false);
   units('rad'); run('copyCurrentToPlan()');

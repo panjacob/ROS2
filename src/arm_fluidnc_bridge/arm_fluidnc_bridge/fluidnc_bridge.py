@@ -11,11 +11,24 @@ Topics:
   sub  joint_trajectory  trajectory_msgs/JointTrajectory (timed sequence of points)
   sub  jog               sensor_msgs/JointState      (velocity [rad/s] per joint; keep publishing,
                                                       motion stops after jog_timeout without messages)
+  pub  ~/trajectory_status std_msgs/String           (latched: armed/executing/result/disarm)
+Actions:
+  /arm_controller/follow_joint_trajectory  control_msgs/FollowJointTrajectory (MoveIt)
 Services:
   ~/home          $H  (FluidNC homing cycle, needs homing configured in FluidNC)
   ~/home_<joint>  endstop homing of one joint (homing_* parameters)
-  ~/unlock        $X  (clear alarm)
-  ~/stop          feed hold + soft reset, clears queued moves, aborts homing
+  ~/unlock        $X  (clear alarm) and deliberately re-arm trajectory execution; arms only after
+                  $X is acknowledged ok and a later status report is not Alarm
+  ~/stop          feed hold, then soft reset once a fresh status report confirms the arm stopped;
+                  clears queued moves, aborts homing and trajectory goals,
+                  disarms trajectory execution until ~/unlock
+
+joint_command, joint_trajectory, jog and homing are refused while a trajectory goal is active;
+a trajectory goal is refused while any of them is active.
+While a STOP is finishing (feed hold sent, soft reset not yet done) every motion source is
+refused (joint_command, joint_trajectory, jog, homing, unlock, trajectory goals) and the writer
+sends no queued line. After a STOP, jog stays inhibited until a zero-velocity jog message (or a
+pause of at least jog_timeout without jog messages): a held stick/button never resumes motion.
 """
 
 import math
@@ -25,16 +38,36 @@ import threading
 import time
 
 import rclpy
-from rclpy.executors import ExternalShutdownException
+from control_msgs.action import FollowJointTrajectory
+from rclpy.action import ActionServer, CancelResponse, GoalResponse
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.duration import Duration
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.time import Time
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64, String
 from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectory
 
+from arm_sim.motion import joints_from_urdf
+
 from arm_fluidnc_bridge.fluidnc_protocol import (
     build_jog, build_move, compute_feed, jog_segment, parse_status)
+from arm_fluidnc_bridge.trajectory import (
+    TrajectoryError, allowed_duration, goal_tolerances, plan_trajectory, within_tolerance)
+
+# Explicit modal state for trajectory segments: mm (= degrees here), absolute, units/min feed.
+TRAJECTORY_MODES = 'G21 G90 G94'
+# Largest accepted header.stamp in the future; delayed starts are not supported.
+MAX_START_DELAY = 0.5
+# Wait this long for a confirmed stop after feed hold before soft-resetting anyway.
+STOP_CONFIRM_TIMEOUT = 5.0
+# Consecutive post-hold Idle/Hold:0 reports needed: the first one may answer a '?' sent before '!'.
+STOP_CONFIRM_REPORTS = 2
+STOP_POLL_PERIOD = 0.1
+UNLOCK_ACK_TIMEOUT = 2.0
 
 SOFT_RESET = b'\x18'
 FEED_HOLD = b'!'
@@ -95,8 +128,8 @@ class HomingError(Exception):
 
 class FluidNCBridge(Node):
 
-    def __init__(self):
-        super().__init__('fluidnc_bridge')
+    def __init__(self, transport=None, **kwargs):
+        super().__init__('fluidnc_bridge', **kwargs)
         self.declare_parameter('transport', 'serial')
         self.declare_parameter('serial_port', '/dev/ttyUSB0')
         self.declare_parameter('baud', 115200)
@@ -118,6 +151,12 @@ class FluidNCBridge(Node):
         self.declare_parameter('homing_locate_speed', 4.0)
         self.declare_parameter('homing_backoff', 5.0)
         self.declare_parameter('homing_max_travel', 400.0)
+        self.declare_parameter('robot_description', '')
+        self.declare_parameter('status_timeout', 0.5)
+        self.declare_parameter('trajectory_start_tolerance', 0.02)
+        self.declare_parameter('trajectory_goal_tolerance', 0.01)
+        self.declare_parameter('trajectory_time_scaling', 1.5)
+        self.declare_parameter('trajectory_time_margin', 2.0)
 
         def param(name):
             return self.get_parameter(name).value
@@ -147,8 +186,29 @@ class FluidNCBridge(Node):
             if joint not in self._index:
                 raise ValueError(f'homing joint "{joint}" is not in joint_names')
             self._homing_pins[joint] = pin
+        self._status_timeout = float(param('status_timeout'))
+        self._start_tolerance = float(param('trajectory_start_tolerance'))
+        self._goal_tolerance = float(param('trajectory_goal_tolerance'))
+        self._time_scaling = float(param('trajectory_time_scaling'))
+        self._time_margin = float(param('trajectory_time_margin'))
+        if min(self._status_timeout, self._start_tolerance, self._goal_tolerance) <= 0.0 or \
+                self._time_scaling < 1.0 or self._time_margin < 0.0:
+            raise ValueError('invalid trajectory/status parameters')
+        self._limits = None
+        description = param('robot_description')
+        if description:
+            limits = joints_from_urdf(description)
+            missing = [j for j in self._joints if j not in limits]
+            if missing:
+                raise ValueError(f'robot_description has no limits for {missing}')
+            self._limits = {j: limits[j] for j in self._joints}
+        else:
+            self.get_logger().warn(
+                'robot_description not set: trajectory goals will be rejected (no joint limits)')
 
-        if param('transport') == 'tcp':
+        if transport is not None:
+            self._io = transport
+        elif param('transport') == 'tcp':
             self._io = TcpTransport(param('host'), int(param('tcp_port')))
             self.get_logger().info(f"Connected to FluidNC at {param('host')}:{param('tcp_port')}")
         else:
@@ -176,8 +236,17 @@ class FluidNCBridge(Node):
         self._jog_stamp = 0.0
         self._jogging = False
         self._jog_ahead_until = 0.0
+        self._jog_inhibit = False
+        self._jog_msg_time = 0.0
         self._homing = False
+        self._homing_generation = 0
         self._homing_abort = threading.Event()
+        self._last_status_time = None
+        self._generation = 0
+        self._stops_pending = 0
+        self._arb_lock = threading.Lock()
+        self._trajectory_active = False
+        self._armed = True
 
         self._js_pub = self.create_publisher(JointState, 'joint_states', 10)
         self._state_pub = self.create_publisher(String, '~/machine_state', 10)
@@ -186,11 +255,14 @@ class FluidNCBridge(Node):
         self._pins_pub = self.create_publisher(String, '~/limit_switches', 10)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._homing_pub = self.create_publisher(String, '~/homing_status', latched)
+        self._traj_status_pub = self.create_publisher(String, '~/trajectory_status', latched)
         self.create_subscription(JointState, 'joint_command', self._on_joint_command, 10)
         self.create_subscription(JointTrajectory, 'joint_trajectory', self._on_trajectory, 10)
         self.create_subscription(JointState, 'jog', self._on_jog, 10)
         self.create_service(Trigger, '~/home', self._on_home)
-        self.create_service(Trigger, '~/unlock', self._on_unlock)
+        # Unlock blocks until $X is confirmed; its own group keeps ~/stop and timers responsive.
+        self.create_service(Trigger, '~/unlock', self._on_unlock,
+                            callback_group=MutuallyExclusiveCallbackGroup())
         self.create_service(Trigger, '~/stop', self._on_stop)
         for joint in self._homing_pins:
             self.create_service(
@@ -198,11 +270,18 @@ class FluidNCBridge(Node):
                 lambda req, res, j=joint: self._on_home_joint(j, req, res))
         self.create_timer(1.0 / float(param('status_rate')), self._request_status)
         self.create_timer(self._jog_period, self._jog_tick)
+        self._trajectory_action = ActionServer(
+            self, FollowJointTrajectory, '/arm_controller/follow_joint_trajectory',
+            execute_callback=self._execute_trajectory,
+            goal_callback=self._on_trajectory_goal,
+            cancel_callback=self._on_trajectory_cancel,
+            callback_group=ReentrantCallbackGroup())
 
         threading.Thread(target=self._read_loop, daemon=True).start()
         threading.Thread(target=self._write_loop, daemon=True).start()
         self._enqueue('G90')
         self._report('not homed' if self._homing_pins else 'no endstops configured')
+        self._traj_status('armed: waiting for a trajectory goal')
 
     # ---------------------------------------------------------------- I/O
 
@@ -210,20 +289,22 @@ class FluidNCBridge(Node):
         with self._write_lock:
             self._io.write(data)
 
-    def _enqueue(self, line, timeout=None, pending=None):
-        self._queue.put((line, timeout or self._ack_timeout, pending))
+    def _enqueue(self, line, timeout=None, pending=None, generation=None):
+        if generation is None:
+            generation = self._generation
+        self._queue.put((line, timeout or self._ack_timeout, pending, generation))
 
-    def _send_wait(self, line, timeout=None):
+    def _send_wait(self, line, timeout=None, generation=None):
         """Queue a line and block until FluidNC answers ok (True) or error/timeout (False)."""
         pending = _Pending()
-        self._enqueue(line, timeout, pending)
+        self._enqueue(line, timeout, pending, generation)
         pending.event.wait((timeout or self._ack_timeout) + 1.0)
         return pending.ok
 
     def _clear_queue(self):
         while True:
             try:
-                _line, _timeout, pending = self._queue.get_nowait()
+                _line, _timeout, pending, _gen = self._queue.get_nowait()
             except queue.Empty:
                 return
             if pending is not None:
@@ -239,12 +320,26 @@ class FluidNCBridge(Node):
         # Send-response protocol: one line at a time, wait for ok/error.
         while self._running:
             try:
-                line, timeout, pending = self._queue.get(timeout=0.2)
+                line, timeout, pending, generation = self._queue.get(timeout=0.2)
             except queue.Empty:
                 continue
             self._ack.clear()
-            self._inflight = line
-            self._raw_write((line + '\n').encode('ascii'))
+            with self._write_lock:
+                # A STOP after this line was queued bumps the generation: never send stale lines,
+                # and send nothing at all until the STOP sequence (soft reset) has finished.
+                stale = generation != self._generation or self._stops_pending > 0
+                if not stale:
+                    self._inflight = line
+                    try:
+                        self._io.write((line + '\n').encode('ascii'))
+                    except Exception as exc:  # noqa: BLE001
+                        self.get_logger().error(f'Write failed: {exc}')
+                        stale = True
+                        self._inflight = None
+            if stale:
+                if pending is not None:
+                    pending.event.set()
+                continue
             self.get_logger().debug(f'>> {line}')
             ok = False
             acked = self._ack.wait(timeout)
@@ -313,6 +408,7 @@ class FluidNCBridge(Node):
 
         positions = status['positions']
         status['mpos'] = None
+        status['wpos'] = None
         if positions is not None and len(positions) >= n:
             if status['pos_type'] == 'MPos':
                 mpos = positions[:n]
@@ -323,6 +419,7 @@ class FluidNCBridge(Node):
             self._mpos = mpos
             self._position_deg = wpos
             status['mpos'] = mpos
+            status['wpos'] = wpos
             msg = JointState()
             msg.header.stamp = self.get_clock().now().to_msg()
             msg.name = self._joints
@@ -331,6 +428,7 @@ class FluidNCBridge(Node):
 
         with self._status_cond:
             self._last_status = status
+            self._last_status_time = time.monotonic()
             self._status_seq += 1
             self._status_cond.notify_all()
 
@@ -352,12 +450,24 @@ class FluidNCBridge(Node):
             target[idx] = math.degrees(value)
 
     def _busy(self, what):
+        if self._stops_pending:
+            self.get_logger().warn(f'{what} ignored while STOP is finishing',
+                                   throttle_duration_sec=2.0)
+            return True
         if self._homing:
             self.get_logger().warn(f'{what} ignored while homing', throttle_duration_sec=2.0)
+            return True
+        if self._trajectory_active:
+            self.get_logger().warn(
+                f'{what} ignored while a trajectory goal is active', throttle_duration_sec=2.0)
             return True
         return False
 
     def _on_joint_command(self, msg):
+        with self._arb_lock:
+            self._joint_command_locked(msg)
+
+    def _joint_command_locked(self, msg):
         if self._busy('joint_command'):
             return
         target = self._start_deg()
@@ -369,6 +479,10 @@ class FluidNCBridge(Node):
         self._last_cmd_deg = target
 
     def _on_trajectory(self, msg):
+        with self._arb_lock:
+            self._trajectory_topic_locked(msg)
+
+    def _trajectory_topic_locked(self, msg):
         if self._busy('joint_trajectory'):
             return
         start = self._start_deg()
@@ -397,13 +511,47 @@ class FluidNCBridge(Node):
             deg = math.degrees(value)
             vel[idx] = max(-self._max_jog_speed, min(self._max_jog_speed, deg))
         with self._jog_lock:
+            now = time.monotonic()
+            gap = now - self._jog_msg_time
+            # Refreshed for every message, refused ones included, so the release/pause rule
+            # below measures the real jog stream.
+            self._jog_msg_time = now
+            refused = None
+            if self._trajectory_active:
+                refused = 'a trajectory goal is active'
+            elif self._homing:
+                refused = 'homing'
+            if refused is not None:
+                self._jog_vel = [0.0] * len(self._joints)
+                self._jog_stamp = 0.0
+                if any(vel):
+                    # A stick/button held while jog is refused must be released (or paused)
+                    # once jogging is allowed again; it never starts motion by itself.
+                    self._jog_inhibit = True
+                    self.get_logger().warn(f'jog ignored while {refused}',
+                                           throttle_duration_sec=2.0)
+                return
+            if self._jog_inhibit:
+                # After STOP: require a release (zero velocity) or a pause in the jog stream, so a
+                # stick/button still held during the STOP never restarts motion by itself.
+                if self._stops_pending or (any(vel) and gap < self._jog_timeout):
+                    if any(vel):
+                        self.get_logger().warn(
+                            'jog ignored after STOP: release the jog first',
+                            throttle_duration_sec=2.0)
+                    return
+                self._jog_inhibit = False
             self._jog_vel = vel
-            self._jog_stamp = time.monotonic()
+            self._jog_stamp = now
 
     def _jog_tick(self):
+        with self._arb_lock:
+            self._jog_tick_locked()
+
+    def _jog_tick_locked(self):
         # Velocity jog: stream short $J segments, keeping only jog_lookahead seconds queued
         # so a stop (jog cancel) or a speed change takes effect quickly.
-        if self._homing:
+        if self._stops_pending or self._homing or self._trajectory_active:
             return
         now = time.monotonic()
         with self._jog_lock:
@@ -455,8 +603,12 @@ class FluidNCBridge(Node):
 
     def _on_home_joint(self, joint, _req, res):
         reason = None
-        if self._homing:
+        if self._stops_pending:
+            reason = 'STOP still in progress'
+        elif self._homing:
             reason = 'homing already running'
+        elif self._trajectory_active:
+            reason = 'a trajectory goal is active'
         elif self._jogging:
             reason = 'stop jogging first'
         elif self._state != 'Idle':
@@ -470,7 +622,16 @@ class FluidNCBridge(Node):
         if reason:
             res.success, res.message = False, reason
             return res
-        self._homing = True
+        with self._arb_lock:
+            if self._stops_pending:
+                res.success, res.message = False, 'STOP still in progress'
+                return res
+            if self._trajectory_active or self._homing:
+                res.success, res.message = False, 'a trajectory goal or homing is active'
+                return res
+            self._homing = True
+            # Homing lines carry this generation, so a STOP makes all later ones stale.
+            self._homing_generation = self._generation
         self._homing_abort.clear()
         threading.Thread(target=self._home_joint, args=(joint,), daemon=True).start()
         res.success, res.message = True, f'Homing {joint} started'
@@ -495,7 +656,8 @@ class FluidNCBridge(Node):
             center = (left + right) / 2.0
             status = self._wait_idle()
             here = status['mpos'][i] - center
-            if not self._send_wait(f'G10 L20 P1 {self._axes[i]}{here:.4f}'):
+            if not self._send_wait(f'G10 L20 P1 {self._axes[i]}{here:.4f}',
+                                   generation=self._homing_generation):
                 raise HomingError('FluidNC rejected the new work position')
             self._last_cmd_deg = None
             self._report(f'{joint}: homed, travel {span:.2f} deg (+/-{span / 2:.2f}), '
@@ -537,7 +699,7 @@ class FluidNCBridge(Node):
 
     def _start_jog(self, i, delta, speed):
         line = build_jog([self._axes[i]], [delta], speed * 60.0)
-        if not self._send_wait(line):
+        if not self._send_wait(line, generation=self._homing_generation):
             raise HomingError(f'FluidNC rejected "{line}"')
 
     def _watch(self, timeout):
@@ -582,46 +744,382 @@ class FluidNCBridge(Node):
     # ----------------------------------------------------------- services
 
     def _on_home(self, _req, res):
-        if self._homing:
-            res.success, res.message = False, 'endstop homing running'
-            return res
-        self._last_cmd_deg = None
-        self._enqueue('$H', self._homing_timeout)
+        with self._arb_lock:
+            if self._stops_pending:
+                res.success, res.message = False, 'STOP still in progress'
+                return res
+            if self._homing or self._trajectory_active:
+                res.success, res.message = False, 'endstop homing or a trajectory goal is active'
+                return res
+            self._last_cmd_deg = None
+            self._enqueue('$H', self._homing_timeout)
         res.success, res.message = True, 'Homing queued'
         return res
 
     def _on_unlock(self, _req, res):
-        self._last_cmd_deg = None
-        self._enqueue('$X')
-        res.success, res.message = True, 'Unlock queued'
+        # Unlock is the deliberate operator action that re-arms trajectory execution. Arm only
+        # once FluidNC acknowledged $X and a status report requested afterwards is not Alarm.
+        with self._arb_lock:
+            if self._trajectory_active:
+                res.success, res.message = False, 'a trajectory goal is active'
+                return res
+            if self._stops_pending:
+                res.success, res.message = False, 'STOP still in progress; try again when stopped'
+                return res
+            self._armed = False
+            self._last_cmd_deg = None
+            generation = self._generation
+            pending = _Pending()
+            self._enqueue('$X', UNLOCK_ACK_TIMEOUT, pending, generation)
+        error = None
+        state = None
+        if not pending.event.wait(UNLOCK_ACK_TIMEOUT + 1.0) or not pending.ok:
+            error = 'FluidNC did not acknowledge $X with ok (error, timeout or busy queue)'
+        else:
+            status = self._wait_status(max(self._status_timeout, 0.3))
+            if status is None:
+                error = 'no FluidNC status report after $X'
+            else:
+                state = status['state']
+                if state.startswith('Alarm'):
+                    error = f'FluidNC still in {state} after $X'
+        with self._arb_lock:
+            if error is None and generation != self._generation:
+                error = 'interrupted by STOP'
+            if error is None:
+                self._armed = True
+        if error is not None:
+            self._disarm(f'unlock failed: {error}')
+            res.success, res.message = False, f'Unlock failed: {error}; execution stays disarmed'
+            return res
+        self._traj_status(f'armed: re-armed by ~/unlock (FluidNC {state})')
+        res.success, res.message = True, (f'Unlocked ($X ok, FluidNC {state}); '
+                                          'trajectory execution armed')
         return res
 
     def _on_stop(self, _req, res):
-        self._homing_abort.set()
-        with self._jog_lock:
-            self._jog_stamp = 0.0
-        self._jogging = False
-        self._clear_queue()
-        self._raw_write(JOG_CANCEL)
-        self._raw_write(FEED_HOLD)
-        threading.Thread(target=self._finish_stop, daemon=True).start()
-        res.success, res.message = True, 'Feed hold sent, reset follows when stopped'
+        self._halt('STOP requested')
+        res.success, res.message = True, ('Feed hold sent, reset follows when stopped; '
+                                          'trajectory execution disarmed until unlock')
         return res
 
-    def _finish_stop(self):
-        # Reset only after decelerating to Hold:0, otherwise FluidNC loses position (alarm).
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and self._state not in ('Hold:0', 'Idle'):
-            time.sleep(0.05)
-        self._raw_write(SOFT_RESET)
-        self._ack_ok = False
-        self._ack.set()
-        self._last_cmd_deg = None
-        self._enqueue('G90')
+    def _halt(self, reason):
+        """Feed hold, flush queued lines, soft reset once stopped; disarm trajectory execution.
+
+        Returns an Event set when the reset has been sent.
+        """
+        # One atomic step under _arb_lock (also used by unlock's final arming check and every
+        # motion source): new generation, STOP pending, disarmed, jog dropped and inhibited.
+        with self._arb_lock:
+            with self._write_lock:
+                self._generation += 1
+                self._stops_pending += 1
+            self._armed = False
+            self._homing_abort.set()
+            self._jogging = False
+            with self._jog_lock:
+                self._jog_vel = [0.0] * len(self._joints)
+                self._jog_stamp = 0.0
+                self._jog_inhibit = True
+        self._clear_queue()
+        done = threading.Event()
+        # Only status reports newer than this may confirm the stop (cached state can predate
+        # motion that the hold interrupts).
+        with self._status_cond:
+            hold_seq = self._status_seq
+        try:
+            self._raw_write(JOG_CANCEL)
+            self._raw_write(FEED_HOLD)
+            self._raw_write(STATUS_QUERY)
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f'STOP could not be sent: {exc}')
+            self._end_stop(reset_sent=False)
+            self._traj_status(self._disarm_text(reason))
+            done.set()
+            return done
+        self._traj_status(self._disarm_text(reason))
+        threading.Thread(target=self._finish_stop, args=(hold_seq, done), daemon=True).start()
+        return done
+
+    def _end_stop(self, reset_sent):
+        with self._arb_lock:
+            with self._write_lock:
+                self._stops_pending -= 1
+            if reset_sent and not self._stops_pending:
+                # Queued while still holding _arb_lock: no motion line can get ahead of it.
+                self._enqueue('G90')
+
+    def _wait_stopped(self, hold_seq, timeout):
+        """Wait for FluidNC to report a stop in status reports received after the feed hold.
+
+        Accepts Alarm (motion already aborted) or STOP_CONFIRM_REPORTS consecutive Idle/Hold:0
+        reports. Returns False on timeout or lost connection.
+        """
+        deadline = time.monotonic() + timeout
+        next_query = time.monotonic() + STOP_POLL_PERIOD
+        seen = hold_seq
+        stopped = 0
+        while self._running:
+            now = time.monotonic()
+            if now >= deadline:
+                return False
+            if now >= next_query:
+                next_query = now + STOP_POLL_PERIOD
+                try:
+                    self._raw_write(STATUS_QUERY)
+                except Exception:  # noqa: BLE001
+                    pass
+            with self._status_cond:
+                self._status_cond.wait_for(lambda: self._status_seq != seen, 0.05)
+                seq, status = self._status_seq, self._last_status
+            if seq == seen:
+                continue
+            seen = seq
+            state = status['state']
+            if state.startswith('Alarm'):
+                return True
+            stopped = stopped + 1 if state in ('Hold:0', 'Idle') else 0
+            if stopped >= STOP_CONFIRM_REPORTS:
+                return True
+        return False
+
+    def _finish_stop(self, hold_seq, done=None):
+        # Reset only after decelerating to Hold:0/Idle, otherwise FluidNC aborts the cycle
+        # (Alarm, position lost).
+        reset_sent = False
+        try:
+            if not self._wait_stopped(hold_seq, STOP_CONFIRM_TIMEOUT):
+                self.get_logger().error(
+                    f'Stop not confirmed by FluidNC within {STOP_CONFIRM_TIMEOUT:.0f} s; '
+                    'sending soft reset anyway (may abort motion: Alarm, position lost)')
+                self._traj_status(
+                    'disarmed: stop not confirmed, soft reset sent anyway; position may be lost - '
+                    'verify or re-home before Unlock / re-arm')
+            self._raw_write(SOFT_RESET)
+            reset_sent = True
+            self._ack_ok = False
+            self._ack.set()
+            self._last_cmd_deg = None
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f'Soft reset could not be sent: {exc}')
+        finally:
+            self._end_stop(reset_sent)
+            if done is not None:
+                done.set()
+
+    # ------------------------------------------------- trajectory action
+
+    def _traj_status(self, text):
+        self.get_logger().info(f'Trajectory: {text}')
+        self._traj_status_pub.publish(String(data=text))
+
+    @staticmethod
+    def _disarm_text(reason):
+        return f'disarmed: {reason}; check the arm, then Unlock / re-arm (~/unlock)'
+
+    def _disarm(self, reason):
+        self._armed = False
+        self._traj_status(self._disarm_text(reason))
+
+    def _jog_requested(self):
+        with self._jog_lock:
+            return time.monotonic() - self._jog_stamp < self._jog_timeout and any(self._jog_vel)
+
+    def _trajectory_blocker(self):
+        if not self._running:
+            return 'FluidNC connection lost'
+        if self._limits is None:
+            return 'robot_description not set (joint limits unknown)'
+        if self._stops_pending:
+            return 'STOP is still finishing'
+        if not self._armed:
+            return 'execution disarmed after STOP or a fault; Unlock / re-arm (~/unlock) first'
+        if self._homing:
+            return 'homing in progress'
+        if self._jogging or self._jog_requested():
+            return 'jog active'
+        if not self._queue.empty() or self._inflight is not None:
+            return 'other commands are still being sent'
+        return None
+
+    def _on_trajectory_goal(self, _goal_request):
+        with self._arb_lock:
+            if self._stops_pending:
+                self.get_logger().warn('Trajectory goal rejected: STOP is still finishing')
+                return GoalResponse.REJECT
+            if self._trajectory_active:
+                self.get_logger().warn('Trajectory goal rejected: another goal is active')
+                return GoalResponse.REJECT
+            self._trajectory_active = True
+        return GoalResponse.ACCEPT
+
+    @staticmethod
+    def _on_trajectory_cancel(_goal_handle):
+        return CancelResponse.ACCEPT
+
+    def _execute_trajectory(self, goal_handle):
+        result = FollowJointTrajectory.Result()
+        try:
+            try:
+                outcome, code, message = self._run_trajectory(goal_handle)
+            except Exception as exc:  # noqa: BLE001
+                self.get_logger().error(f'Trajectory execution failed: {exc!r}')
+                outcome, code, message = self._fault(f'internal error: {exc}')
+            result.error_code = getattr(FollowJointTrajectory.Result, code)
+            result.error_string = message
+            if outcome == 'succeed':
+                goal_handle.succeed()
+            elif outcome == 'cancel':
+                goal_handle.canceled()
+            else:
+                goal_handle.abort()
+            note = '' if self._armed else '; execution disarmed until Unlock / re-arm'
+            self._traj_status(f'{outcome}: {message}{note}')
+            return result
+        finally:
+            self._last_cmd_deg = None
+            with self._arb_lock:
+                self._trajectory_active = False
+
+    def _fault(self, reason, code='PATH_TOLERANCE_VIOLATED'):
+        self._halt(reason).wait(6.0)
+        return 'abort', code, reason
+
+    def _check_goal_extras(self, goal):
+        multi = goal.multi_dof_trajectory
+        if multi.joint_names or multi.points:
+            raise TrajectoryError('INVALID_GOAL', 'multi_dof_trajectory is not supported')
+        if goal.path_tolerance:
+            raise TrajectoryError(
+                'INVALID_GOAL', 'path_tolerance is not supported (FluidNC timing is approximate)')
+        for field in ('component_path_tolerance', 'component_goal_tolerance'):
+            if getattr(goal, field, None):
+                raise TrajectoryError('INVALID_GOAL', f'{field} is not supported')
+        stamp = goal.trajectory.header.stamp
+        if stamp.sec or stamp.nanosec:
+            delay = (Time.from_msg(stamp) - self.get_clock().now()).nanoseconds * 1e-9
+            if delay > MAX_START_DELAY:
+                raise TrajectoryError(
+                    'INVALID_GOAL', 'delayed start (future header.stamp) is not supported')
+
+    def _run_trajectory(self, goal_handle):
+        goal = goal_handle.request
+        generation = self._generation
+        reason = self._trajectory_blocker()
+        if reason is None:
+            status = self._wait_status(self._status_timeout)
+            if status is None:
+                reason = 'no fresh FluidNC status'
+            elif status['state'] != 'Idle':
+                reason = f"FluidNC must be Idle (now {status['state']})"
+            elif status['wpos'] is None:
+                reason = 'no position from FluidNC'
+        if reason is not None:
+            return 'abort', 'INVALID_GOAL', f'Not ready: {reason}'
+
+        traj = goal.trajectory
+        try:
+            self._check_goal_extras(goal)
+            tolerances = goal_tolerances(
+                [{'name': t.name, 'position': t.position, 'velocity': t.velocity,
+                  'acceleration': t.acceleration} for t in goal.goal_tolerance],
+                self._joints, self._goal_tolerance)
+            points = [{
+                'time': p.time_from_start.sec + p.time_from_start.nanosec * 1e-9,
+                'positions': list(p.positions),
+                'velocities': list(p.velocities),
+                'accelerations': list(p.accelerations),
+                'effort': list(p.effort),
+            } for p in traj.points]
+            current = [math.radians(v) for v in status['wpos']]
+            plan = plan_trajectory(traj.joint_names, points, self._joints, self._axes,
+                                   self._limits, current, self._start_tolerance, self._max_feed)
+            gtt = goal.goal_time_tolerance.sec + goal.goal_time_tolerance.nanosec * 1e-9
+            allowed = allowed_duration(plan.duration, gtt, self._time_scaling, self._time_margin)
+        except TrajectoryError as exc:
+            return 'abort', exc.code, str(exc)
+
+        self._traj_status(
+            f'executing: {len(plan.lines)} segments, {plan.duration:.2f} s (allowed {allowed:.1f} s)')
+        pendings = []
+        # Lines carry the generation read before validation: a STOP in between drops them all.
+        for line in [TRAJECTORY_MODES] + plan.lines:
+            pending = _Pending()
+            self._enqueue(line, pending=pending, generation=generation)
+            pendings.append(pending)
+
+        start = time.monotonic()
+        deadline = start + allowed
+        seen = None
+        final_seq = None
+        while True:
+            if goal_handle.is_cancel_requested:
+                self._halt('trajectory goal canceled').wait(6.0)
+                return 'cancel', 'SUCCESSFUL', 'Trajectory canceled; motion halted'
+            if self._generation != generation:
+                return 'abort', 'PATH_TOLERANCE_VIOLATED', 'Trajectory interrupted by STOP'
+            if not self._running:
+                return self._fault('FluidNC connection lost')
+            if any(p.event.is_set() and not p.ok for p in pendings):
+                return self._fault('FluidNC rejected or did not acknowledge a trajectory line')
+            now = time.monotonic()
+            if self._last_status_time is None or \
+                    now - self._last_status_time > self._status_timeout:
+                return self._fault('FluidNC status reports are stale')
+            if now > deadline:
+                return self._fault(f'trajectory did not finish within {allowed:.1f} s',
+                                   'GOAL_TOLERANCE_VIOLATED')
+            with self._status_cond:
+                self._status_cond.wait_for(lambda: self._status_seq != seen, 0.05)
+                seq, status = self._status_seq, self._last_status
+            if seq == seen:
+                continue
+            seen = seq
+            if self._generation != generation:
+                return 'abort', 'PATH_TOLERANCE_VIOLATED', 'Trajectory interrupted by STOP'
+            state = status['state']
+            if state not in ('Idle', 'Run'):
+                return self._fault(f'FluidNC entered {state} during the trajectory')
+            if status['wpos'] is None:
+                continue
+            actual = [math.radians(v) for v in status['wpos']]
+            self._publish_feedback(goal_handle, plan, time.monotonic() - start, actual)
+            if final_seq is None:
+                if all(p.event.is_set() for p in pendings):
+                    final_seq = seq
+                continue
+            # Two reports after the last ok: Idle then means the planner really finished.
+            if seq >= final_seq + 2 and state == 'Idle':
+                off = within_tolerance(actual, plan.final, tolerances)
+                if off is None:
+                    return 'succeed', 'SUCCESSFUL', (
+                        f'Trajectory completed: {len(plan.lines)} segments, FluidNC Idle '
+                        'within goal tolerance')
+                i, error = off
+                reason = (f'{self._joints[i]} stopped {error:+.4f} rad from the final point '
+                          f'(tolerance {tolerances[i]:.4f})')
+                self._disarm(reason)
+                return 'abort', 'GOAL_TOLERANCE_VIOLATED', reason
+
+    def _publish_feedback(self, goal_handle, plan, elapsed, actual):
+        desired, velocity = plan.sample(elapsed)
+        fb = FollowJointTrajectory.Feedback()
+        fb.header.stamp = self.get_clock().now().to_msg()
+        fb.joint_names = list(self._joints)
+        stamp = Duration(seconds=max(0.0, elapsed)).to_msg()
+        fb.desired.positions = desired
+        fb.desired.velocities = velocity
+        fb.desired.time_from_start = stamp
+        fb.actual.positions = actual
+        fb.actual.time_from_start = stamp
+        fb.error.positions = [d - a for d, a in zip(desired, actual)]
+        fb.error.time_from_start = stamp
+        goal_handle.publish_feedback(fb)
 
     def destroy_node(self):
         self._running = False
         try:
+            self._trajectory_action.destroy()
             self._io.close()
         finally:
             super().destroy_node()
@@ -637,11 +1135,15 @@ def main(args=None):
             '(Windows: usbipd attach --wsl --busid 2-1) and close other programs using the port.')
         rclpy.try_shutdown()
         raise SystemExit(1)
+    # Action execution blocks its own thread; status, services and timers keep running.
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()
 
