@@ -21,7 +21,7 @@ reads joint positions back from FluidNC status reports.
 | [src/arm_fluidnc_bridge](src/arm_fluidnc_bridge) | Python node: ROS 2 ⇄ FluidNC (G-code over serial/TCP) |
 | [src/arm_start](src/arm_start) | Launch files and parameters for sim / real hardware |
 | [src/arm_moveit_config](src/arm_moveit_config) | MoveIt 2 arm group, collision settings and OMPL planner |
-| [src/arm_web](src/arm_web) | Web page: live state, joint planning and execution, jog, go-to, TCPs, gamepad |
+| [src/arm_web](src/arm_web) | Web page: live state, joint/TCP planning and execution, jog, go-to, TCPs, gamepad |
 | [src/arm_teleop](src/arm_teleop) | Gamepad (`/joy`) → joint jog |
 | [firmware/fluidnc/config.yaml](firmware/fluidnc/config.yaml) | FluidNC machine config for the TinyBee (axes = joints, units = degrees) |
 | [docs](docs) | Step-by-step development guides |
@@ -72,16 +72,23 @@ Hardware service and topic commands need a second terminal with ROS and this
 workspace sourced; see [ROS 2 software](docs/06-ros2-software.md#62-fluidnc_bridge-node).
 
 For step 2, open **http://localhost:8080** after the launch starts. In the Joints
-table, enter all five angles under **Target** (degrees by default; choose radians with **Joint units**), then click **Preview plan**. Review the animation in RViz. Click **Execute plan** to move
+table, enter target angles under **Target** (degrees by default; choose radians with **Joint units**; blank fields hold current angles with fresh state), then click **Preview plan**. Review the animation in RViz. Click **Execute plan** to move
 the simulated robot; the panel reports completion or failure. **STOP** interrupts
 execution. A plan can be executed once within 120 seconds. Moving the arm with
 direct movement or jog invalidates the plan, so plan again before executing.
 
-With `use_hardware:=true`, planning and RViz preview still work, but Execute is
-disabled because the FluidNC bridge has no trajectory action controller yet.
+With `use_hardware:=true`, Execute uses the FluidNC bridge trajectory action at reduced speed.
+This hardware path has been tested offline only; physical-arm validation remains pending.
 Use **Use current angles** to fill the shared targets before adjusting individual joints.
 The secondary **Direct movement — no collision checking** section sends those targets
 directly, including on hardware; sending does not confirm arrival.
+To position a tool, select its **Active TCP**, enter all three **Target X/Y/Z [mm]**
+coordinates in the displayed reference frame (normally `world`), then click
+**Preview TCP plan**, review RViz, and **Execute TCP plan**. **Use current TCP position**
+fills the fields from fresh state. The goal is the selected TCP origin including its
+saved offset; orientation is free for this 5-DOF arm, and the planned path need not
+be straight. Joint/TCP previews share one stored plan; target or tool changes require
+a new preview. TCP offsets describe geometry, not additional tool collision bodies.
 For a headless run, use `rviz:=false`; change the panel port with `web_port:=8081`.
 
 Run tests: `colcon test --packages-select arm_sim arm_web arm_fluidnc_bridge && colcon test-result --verbose`
@@ -99,5 +106,5 @@ Run tests: `colcon test --packages-select arm_sim arm_web arm_fluidnc_bridge && 
 
 ## Status
 
-Joint simulation, MoveIt 2 joint planning and simulation execution are available.
+Joint simulation, MoveIt 2 joint/TCP position planning and simulation execution are available.
 See [docs/07-roadmap.md](docs/07-roadmap.md) for future work.

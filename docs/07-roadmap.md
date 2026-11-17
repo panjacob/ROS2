@@ -32,6 +32,7 @@ Work in small, testable phases. Do not move on until the exit criteria pass.
 - [ ] Real arm and RViz model agree visually in several poses
 
 ## Phase 4 – Motion planning
+- [x] Named TCP XYZ targets in the web panel: millimetres, free orientation, MoveIt preview and shared execution
 - [ ] `arm_moveit_config` generated ([06](06-ros2-software.md#63-adding-moveit-2))
 - [ ] Plans executed in simulation (mock hardware)
 - [ ] `arm_hardware` ros2_control interface implemented
