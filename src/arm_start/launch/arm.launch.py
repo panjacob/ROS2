@@ -2,8 +2,11 @@
 
   ros2 launch arm_start arm.launch.py                       # joint simulator + web panel + RViz
   ros2 launch arm_start arm.launch.py use_hardware:=true    # real arm through FluidNC
+  ros2 launch arm_start arm.launch.py camera:=false         # without the USB camera
+  ros2 launch arm_start arm.launch.py camera2:=false        # without the phone camera (Telescope)
+  ros2 launch arm_start arm.launch.py camera_width:=640 camera_height:=480  # native Linux host
 
-Web page (state, jog, go-to, homing, gamepad) at http://localhost:8080 (web_port:=...).
+Web page (state, camera, jog, go-to, homing, gamepad) at http://localhost:8080 (web_port:=...).
 A gamepad connected to the browser always works (browser -> /joy -> joy_teleop -> /jog).
 MoveIt executes plans through /arm_controller/follow_joint_trajectory, served by the simulator
 or, with use_hardware:=true, by the FluidNC bridge (planned at 0.1 speed scaling, 0.3 in sim).
@@ -83,6 +86,61 @@ def generate_launch_description():
         ],
     )
 
+    # Camera: attach the USB camera to WSL if needed; the node retries until frames arrive.
+    attach_camera = ExecuteProcess(
+        cmd=[PathJoinSubstitution(
+            [FindPackagePrefix('arm_start'), 'lib', 'arm_start', 'attach_board.sh']),
+            LaunchConfiguration('camera_device'), LaunchConfiguration('camera_usb_id')],
+        name='attach_camera',
+        output='screen',
+    )
+    camera_node = Node(
+        package='arm_camera',
+        executable='camera_node',
+        name='camera',
+        parameters=[{'device': LaunchConfiguration('camera_device'),
+                     'width': ParameterValue(LaunchConfiguration('camera_width'), value_type=int),
+                     'height': ParameterValue(LaunchConfiguration('camera_height'), value_type=int),
+                     'exposure': ParameterValue(
+                         LaunchConfiguration('camera_exposure'), value_type=int)}],
+        output='screen',
+    )
+    camera = GroupAction(
+        condition=IfCondition(LaunchConfiguration('camera')),
+        actions=[
+            attach_camera,
+            RegisterEventHandler(OnProcessExit(target_action=attach_camera, on_exit=[camera_node])),
+        ],
+    )
+
+    # Second camera: phone through Telescope. WSL can't open Windows webcams, so the bridge runs on
+    # Windows (WSL interop) and serves the camera as MJPEG; camera2 reads it and retries until it's up.
+    camera2_bridge = ExecuteProcess(
+        cmd=['bash', '-c',
+             'command -v py.exe >/dev/null || { echo "py.exe not found: needs WSL with Windows '
+             'Python (or camera2_bridge:=false and start the bridge yourself)"; exit 1; }; '
+             'exec py.exe "$(wslpath -w "$(realpath "$0")")" --camera "$1"',
+             PathJoinSubstitution(
+                 [FindPackageShare('arm_camera'), 'windows', 'windows_camera_bridge.py']),
+             LaunchConfiguration('camera2_name')],
+        name='camera2_bridge',
+        output='screen',
+        condition=IfCondition(PythonExpression([
+            "'", LaunchConfiguration('camera2'), "' == 'true' and '",
+            LaunchConfiguration('camera2_bridge'), "' == 'true'"])),
+    )
+    camera2_node = Node(
+        package='arm_camera',
+        executable='camera_node',
+        name='camera2',
+        parameters=[{'device': LaunchConfiguration('camera2_device'),
+                     'frame_id': 'camera2_link'}],
+        remappings=[('camera/image_raw', 'camera2/image_raw'),
+                    ('camera/image_raw/compressed', 'camera2/image_raw/compressed')],
+        condition=IfCondition(LaunchConfiguration('camera2')),
+        output='screen',
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument('use_hardware', default_value='false',
                               description='Connect to FluidNC instead of the joint simulator'),
@@ -93,6 +151,31 @@ def generate_launch_description():
                               description='Port of the web page'),
         DeclareLaunchArgument('tcp_storage_path', default_value='~/.config/ros2_arm/tcps.json',
                               description='Writable JSON file for named TCP offsets'),
+        DeclareLaunchArgument('camera', default_value='true',
+                              description='Start the USB camera (camera/image_raw[/compressed])'),
+        DeclareLaunchArgument('camera_device',
+                              default_value='/dev/v4l/by-id/usb-045e_USB20_Camera-video-index0',
+                              description='V4L2 device of the camera'),
+        DeclareLaunchArgument('camera_usb_id', default_value='045e:00f4',
+                              description='USB vid:pid attached to WSL with usbipd'),
+        DeclareLaunchArgument('camera_width', default_value='320',
+                              description='Camera width: 160, 320 or 640 '
+                                          '(640x480 is unreliable over usbipd/WSL)'),
+        DeclareLaunchArgument('camera_height', default_value='240',
+                              description='Camera height: 120, 240 or 480'),
+        DeclareLaunchArgument('camera_exposure', default_value='1000',
+                              description='Camera exposure 0..6016 (lower = more fps, darker); '
+                                          '-1 = auto (slow in dim light)'),
+        DeclareLaunchArgument('camera2', default_value='true',
+                              description='Start the phone camera (camera2/image_raw[/compressed])'),
+        DeclareLaunchArgument('camera2_bridge', default_value='true',
+                              description='Start windows_camera_bridge.py on Windows (WSL interop)'),
+        DeclareLaunchArgument('camera2_name', default_value='Telescope',
+                              description='Windows camera the bridge reads (name or its start)'),
+        DeclareLaunchArgument('camera2_device',
+                              default_value='http://{windows_host}:8081/stream.mjpg',
+                              description='Stream URL of the phone camera (windows_camera_bridge.py); '
+                                          '{windows_host} = Windows as seen from WSL'),
 
         Node(
             package='moveit_ros_move_group',
@@ -140,6 +223,9 @@ def generate_launch_description():
             output='screen',
         ),
         hardware,
+        camera,
+        camera2_bridge,
+        camera2_node,
         Node(
             package='rviz2',
             executable='rviz2',

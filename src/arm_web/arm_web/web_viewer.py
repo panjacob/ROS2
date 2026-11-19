@@ -1,7 +1,11 @@
 """Web page for the arm: live state + control.
 
 GET  /              page (web/index.html)
-GET  /state         JSON snapshot (joints, TCP transform, bridge status, config)
+GET  /state         JSON snapshot (joints, TCP transform, bridge status, cameras, config)
+GET  /camera.mjpg   live MJPEG stream of camera/image_raw/compressed
+GET  /camera.jpg    latest camera frame
+GET  /camera2.mjpg  live MJPEG stream of camera2/image_raw/compressed (phone)
+GET  /camera2.jpg   latest phone camera frame
 POST /api/jog       {"joint1": deg_per_s, ...}   velocity jog (send repeatedly, ~10 Hz)
 POST /api/goto      {"joint1": deg, ...}         absolute move -> joint_command
 POST /api/home      {"joint": "joint1"}          endstop homing of one joint
@@ -23,6 +27,7 @@ import secrets
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlsplit
 
 import rclpy
 from ament_index_python.packages import get_package_share_directory
@@ -33,9 +38,9 @@ from moveit_msgs.msg import (Constraints, DisplayTrajectory, JointConstraint,
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile
+from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from rclpy.time import Time
-from sensor_msgs.msg import JointState, Joy
+from sensor_msgs.msg import CompressedImage, JointState, Joy
 from std_msgs.msg import Float64, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
@@ -72,6 +77,39 @@ PLAN_ERRORS = {
 }
 
 PLAN_TTL = 120.0
+CAMERA_STALE_S = 2.0
+
+
+class CameraFrames:
+    """Latest JPEG frame; stream handlers wait for the next one."""
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._jpeg = None
+        self._seq = 0
+        self._stamp = 0.0
+
+    def update(self, msg):
+        with self._cond:
+            self._jpeg = bytes(msg.data)
+            self._seq += 1
+            self._stamp = time.monotonic()
+            self._cond.notify_all()
+
+    def latest(self):
+        with self._cond:
+            return self._seq, self._jpeg
+
+    def wait_next(self, seq, timeout):
+        with self._cond:
+            self._cond.wait_for(lambda: self._seq != seq, timeout)
+            return self._seq, self._jpeg
+
+    def status(self):
+        with self._cond:
+            age = time.monotonic() - self._stamp if self._jpeg is not None else None
+        return {'available': age is not None and age < CAMERA_STALE_S,
+                'age_s': None if age is None else round(age, 2)}
 
 
 class StateStore:
@@ -199,6 +237,16 @@ class WebViewer(Node):
         self.create_timer(0.1, self._update_tcp)
 
         self.create_subscription(JointState, 'joint_states', self.store.update_joints, 10)
+        self.camera = CameraFrames()
+        camera_topic = self.declare_parameter(
+            'camera_topic', 'camera/image_raw/compressed').value
+        self.create_subscription(
+            CompressedImage, camera_topic, self.camera.update, qos_profile_sensor_data)
+        self.camera2 = CameraFrames()
+        camera2_topic = self.declare_parameter(
+            'camera2_topic', 'camera2/image_raw/compressed').value
+        self.create_subscription(
+            CompressedImage, camera2_topic, self.camera2.update, qos_profile_sensor_data)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         for key, msg_type in STATUS_TOPICS.items():
             qos = latched if key in LATCHED_STATUS else 10
@@ -555,16 +603,49 @@ def make_handler(node, page_path):
             self.wfile.write(data)
 
         def do_GET(self):
-            if self.path in ('/', '/index.html'):
+            path = urlsplit(self.path).path
+            if path in ('/', '/index.html'):
                 with open(page_path, 'rb') as f:
                     self._send(200, f.read(), 'text/html; charset=utf-8')
-            elif self.path == '/state':
+            elif path == '/state':
                 snap = node.store.snapshot()
                 snap['config'] = node.config()
                 snap['plan'] = node.plan_snapshot()
+                snap['camera'] = node.camera.status()
+                snap['camera2'] = node.camera2.status()
                 self._send(200, json.dumps(snap))
+            elif path in ('/camera.jpg', '/camera2.jpg'):
+                frames = node.camera2 if path == '/camera2.jpg' else node.camera
+                _, jpeg = frames.latest()
+                if jpeg is None:
+                    self._send(503, '{"error": "no camera frame yet"}')
+                else:
+                    self._send(200, jpeg, 'image/jpeg')
+            elif path == '/camera.mjpg':
+                self._stream_camera(node.camera)
+            elif path == '/camera2.mjpg':
+                self._stream_camera(node.camera2)
             else:
                 self._send(404, '{"error": "not found"}')
+
+        def _stream_camera(self, frames):
+            self.send_response(200)
+            self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
+            self.send_header('Cache-Control', 'no-store')
+            self.end_headers()
+            seq = -1
+            try:
+                while True:
+                    seq, jpeg = frames.wait_next(seq, timeout=5.0)
+                    if jpeg is None:
+                        continue
+                    self.wfile.write(
+                        b'--frame\r\nContent-Type: image/jpeg\r\n'
+                        b'Content-Length: ' + str(len(jpeg)).encode() + b'\r\n\r\n'
+                        + jpeg + b'\r\n')
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
 
         def do_POST(self):
             # Browsers can't send a cross-site application/json POST without a CORS preflight

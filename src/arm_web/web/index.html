@@ -52,6 +52,11 @@
   .tcp-editor label { display: flex; flex-direction: column; gap: .2em; font-size: .9em; }
   .tcp-editor input { width: 6.3em; }
   .tcp-editor input#tcpName { width: 10em; }
+  img.camera { display: block; width: 100%; max-width: 640px; border-radius: 6px; background: #111; }
+  img.camera[hidden] { display: none; }
+  .cameras { display: flex; gap: 1em; flex-wrap: wrap; }
+  .cameras > div { flex: 1 1 320px; min-width: 0; }
+  .cameras h3 { margin: 0 0 .3em; font-size: 1em; }
 </style>
 </head>
 <body>
@@ -71,6 +76,22 @@
     <span>Feed: <b id="feed">–</b></span>
     <span>Homing: <b id="homing">–</b></span>
     <span id="executionStatusRow">Execution: <b id="trajectoryStatus">–</b></span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Cameras</h2>
+  <div class="cameras">
+    <div>
+      <h3>USB camera</h3>
+      <p class="muted hint">Status: <span id="camStatus" class="muted">–</span></p>
+      <img id="cam" class="camera" alt="Live USB camera stream" hidden onerror="cameraStreamFailed('cam')">
+    </div>
+    <div>
+      <h3>Phone camera</h3>
+      <p class="muted hint">Status: <span id="cam2Status" class="muted">–</span></p>
+      <img id="cam2" class="camera" alt="Live phone camera stream" hidden onerror="cameraStreamFailed('cam2')">
+    </div>
   </div>
 </div>
 
@@ -161,6 +182,31 @@
 
 <script>
 const $ = id => document.getElementById(id);
+const CAMERAS = {
+  cam: {stream: '/camera.mjpg', missing: 'no frames — is the camera attached to WSL?'},
+  cam2: {stream: '/camera2.mjpg',
+         missing: 'no frames — is Telescope streaming? See [camera2_bridge] lines in the launch output'},
+};
+const cameraStreaming = {};
+
+function cameraStreamFailed(id) {
+  cameraStreaming[id] = false;
+  $(id).hidden = true;
+}
+
+function renderCamera(id, camera) {
+  const ok = !!camera?.available;
+  const status = $(id + 'Status');
+  status.textContent = ok ? 'live'
+    : camera?.age_s == null ? CAMERAS[id].missing
+    : `no new frames for ${camera.age_s.toFixed(1)} s`;
+  status.className = ok ? 'ok' : 'warn';
+  if (ok && !cameraStreaming[id]) {
+    cameraStreaming[id] = true;
+    $(id).hidden = false;
+    $(id).src = CAMERAS[id].stream + '?t=' + Date.now();
+  }
+}
 let config = {home_joints: [], max_jog_speed: 360};
 const RANGE = 180;  // bar spans -RANGE..+RANGE degrees (360° total)
 let rowsBuilt = '';
@@ -549,6 +595,8 @@ async function poll() {
     latestJoints = s.joints;
     latestJointsAge = s.joints_age;
     latestJointsReceived = Date.now();
+    renderCamera('cam', s.camera);
+    renderCamera('cam2', s.camera2);
     $('executeButton').hidden = !config.execution_available;
     $('executionHint').textContent = !config.execution_available
       ? 'Plan preview only; execution unavailable. Review the RViz animation. Direct movement below does not use collision checking.'

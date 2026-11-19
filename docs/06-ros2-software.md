@@ -10,6 +10,7 @@
 | `arm_start` | ament_cmake | `launch/arm.launch.py`, `config/fluidnc_bridge.yaml` |
 | `arm_web` | ament_python | `web_viewer` node: web page (default http://localhost:8080) with live state, STOP/unlock, hold-to-jog, go-to, endstop homing and browser gamepad forwarding |
 | `arm_teleop` | ament_python | `joy_teleop` node: `/joy` → `/jog` velocities (always started) |
+| `arm_camera` | ament_python | `camera_node`: USB camera (OpenCV/V4L2) → `/camera/image_raw` (bgr8) and `/camera/image_raw/compressed` (JPEG); started unless `camera:=false`. A second instance `camera2` reads the phone camera from a stream URL (`camera2_device`, default `http://{windows_host}:8081/stream.mjpg`) → `/camera2/image_raw[/compressed]` (`camera2_link`); started unless `camera2:=false` |
 | `arm_moveit_config` | ament_cmake | SRDF arm group, self-collision exclusions and OMPL planning configuration |
 
 Planned:
@@ -174,6 +175,11 @@ http://localhost:8080 (from Windows too).
   Definitions and the selection persist in `~/.config/ros2_arm/tcps.json`; override
   the path with the `tcp_storage_path` launch argument. The built-in `tool0` is the
   zero-offset TCP and cannot be edited or deleted.
+- Cameras card: live MJPEG streams (`GET /camera.mjpg`, snapshot `GET /camera.jpg`) of
+  `/camera/image_raw/compressed` (`camera_topic` parameter) and of the phone camera
+  (`GET /camera2.mjpg`, `GET /camera2.jpg`, `camera2_topic`). See
+  [2.4.1](02-dev-environment.md#241-usb-camera-microsoft-lifecam-vx-6000) and
+  [2.4.2](02-dev-environment.md#242-phone-camera-telescope) for camera setup in WSL.
 - Gamepad: the browser reads it (Gamepad API, so Windows drivers work – WSL has no gamepad driver)
   and POSTs it to `/api/joy` → `/joy` → `joy_teleop` → `/jog`. Always on when a pad is connected
   (a real pad with the standard layout is preferred over virtual ones like vJoy),
@@ -186,7 +192,8 @@ HTTP API (JSON body, `Content-Type: application/json` required): `/api/jog` `{"j
 `/api/goto` `{"joint1": deg}`, `/api/plan` `{"joint1": deg, ..., "joint5": deg}`,
 `/api/execute` `{"plan_id": "..."}`,
 `/api/home` `{"joint": "joint1"}`, `/api/stop`, `/api/unlock`,
-`/api/joy` `{"axes": [...], "buttons": [...]}`; `GET /state` returns everything shown on the page.
+`/api/joy` `{"axes": [...], "buttons": [...]}`; `GET /state` returns everything shown on the page;
+`GET /camera.mjpg` / `GET /camera.jpg` serve the USB camera, `GET /camera2.mjpg` / `GET /camera2.jpg` the phone camera.
 
 ## 6.4 MoveIt 2 joint planning
 

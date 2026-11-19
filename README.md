@@ -21,8 +21,9 @@ reads joint positions back from FluidNC status reports.
 | [src/arm_fluidnc_bridge](src/arm_fluidnc_bridge) | Python node: ROS 2 ⇄ FluidNC (G-code over serial/TCP) |
 | [src/arm_start](src/arm_start) | Launch files and parameters for sim / real hardware |
 | [src/arm_moveit_config](src/arm_moveit_config) | MoveIt 2 arm group, collision settings and OMPL planner |
-| [src/arm_web](src/arm_web) | Web page: live state, joint planning and execution, jog, go-to, TCPs, gamepad |
+| [src/arm_web](src/arm_web) | Web page: live state, camera streams, joint planning and execution, jog, go-to, TCPs, gamepad |
 | [src/arm_teleop](src/arm_teleop) | Gamepad (`/joy`) → joint jog |
+| [src/arm_camera](src/arm_camera) | USB camera → `/camera/image_raw`, phone camera (Telescope via [windows_camera_bridge.py](src/arm_camera/windows/windows_camera_bridge.py), started by the launch) → `/camera2/image_raw` (+ `/compressed`) |
 | [firmware/fluidnc/config.yaml](firmware/fluidnc/config.yaml) | FluidNC machine config for the TinyBee (axes = joints, units = degrees) |
 | [docs](docs) | Step-by-step development guides |
 | [hardware](hardware) | CAD sources, printable parts and hardware notes |

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Make sure the FluidNC board's USB serial is available in WSL.
-# If the port is missing (board was unplugged / PC rebooted), attach it from Windows with usbipd-win.
-#   attach_board.sh [port] [usb_vid:pid]      defaults: /dev/ttyUSB0 1a86:7523 (CH340 on MKS TinyBee)
+# Make sure a USB device (FluidNC board, camera, ...) is available in WSL.
+# If the device node is missing (unplugged / PC rebooted), attach it from Windows with usbipd-win.
+#   attach_board.sh [device] [usb_vid:pid]    defaults: /dev/ttyUSB0 1a86:7523 (CH340 on MKS TinyBee)
+#   attach_board.sh /dev/v4l/by-id/usb-045e_USB20_Camera-video-index0 045e:00f4   (camera)
 PORT=${1:-/dev/ttyUSB0}
 HWID=${2:-1a86:7523}
 USBIPD="/mnt/c/Program Files/usbipd-win/usbipd.exe"
@@ -22,4 +23,4 @@ for _ in $(seq 50); do
   [ -e "$PORT" ] && { echo "attach_board: $PORT ready"; exit 0; }
   sleep 0.2
 done
-echo "attach_board: $PORT did not appear"; exit 1
+echo "attach_board: $PORT did not appear (missing kernel driver? camera: tools/wsl_camera_driver.sh)"; exit 1
