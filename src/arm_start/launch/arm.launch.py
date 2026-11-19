@@ -2,9 +2,11 @@
 
   ros2 launch arm_start arm.launch.py                       # joint simulator + web panel + RViz
   ros2 launch arm_start arm.launch.py use_hardware:=true    # real arm through FluidNC
+  ros2 launch arm_start arm.launch.py simulator:=gazebo     # Gazebo table + banana
 
 Web page (state, jog, go-to, homing, gamepad) at http://localhost:8080 (web_port:=...).
-A gamepad connected to the browser always works (browser -> /joy -> joy_teleop -> /jog).
+A gamepad controls the simple simulator and hardware (browser -> /joy -> joy_teleop -> /jog).
+Gazebo supports previewed plans, joint jogging and STOP.
 MoveIt executes plans through /arm_controller/follow_joint_trajectory, served by the simulator
 or, with use_hardware:=true, by the FluidNC bridge (planned at 0.1 speed scaling, 0.3 in sim).
 """
@@ -13,9 +15,11 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction, RegisterEventHandler
-from launch.conditions import IfCondition, UnlessCondition
+from launch.actions import (DeclareLaunchArgument, ExecuteProcess, GroupAction,
+                            IncludeLaunchDescription, OpaqueFunction, RegisterEventHandler)
+from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -23,13 +27,16 @@ from launch_ros.substitutions import FindPackagePrefix, FindPackageShare
 from moveit_configs_utils import MoveItConfigsBuilder
 
 
-def generate_launch_description():
+def _launch(context):
     use_hardware = LaunchConfiguration('use_hardware')
+    gazebo = LaunchConfiguration('simulator').perform(context) == 'gazebo'
+    if gazebo and use_hardware.perform(context) == 'true':
+        raise ValueError('simulator:=gazebo cannot be combined with use_hardware:=true')
     use_rviz = LaunchConfiguration('rviz')
     web_port = LaunchConfiguration('web_port')
     tcp_storage_path = LaunchConfiguration('tcp_storage_path')
     model = LaunchConfiguration('model')
-    controller_ns = PythonExpression([
+    controller_ns = '/arm_gazebo' if gazebo else PythonExpression([
         "'/fluidnc_bridge' if '", use_hardware, "' == 'true' else '/arm_sim'"])
     simulation = PythonExpression([
         "'false' if '", use_hardware, "' == 'true' else 'true'"])
@@ -43,7 +50,30 @@ def generate_launch_description():
         [FindPackageShare('arm_start'), 'config', 'fluidnc_bridge.yaml'])
     rviz_config = PathJoinSubstitution(
         [FindPackageShare('arm_description'), 'rviz', 'arm.rviz'])
-    robot_description = ParameterValue(Command(['xacro ', xacro_file]), value_type=str)
+    xacro_command = ['xacro ', xacro_file]
+    gazebo_actions = []
+    web_scene = {}
+    if gazebo:
+        from arm_gazebo.scene import approach_target, load_scene
+        gazebo_share = get_package_share_directory('arm_gazebo')
+        scene_path = (LaunchConfiguration('scene_config').perform(context) or
+                      os.path.join(gazebo_share, 'config', 'scene.yaml'))
+        target = approach_target(load_scene(scene_path))
+        xacro_command += [' gazebo:=true gazebo_controllers:=',
+                          os.path.join(gazebo_share, 'config', 'controllers.yaml')]
+        gazebo_actions.append(IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(
+                gazebo_share, 'launch', 'simulation.launch.py')),
+            launch_arguments={'scene_config': scene_path,
+                              'gazebo_gui': LaunchConfiguration('gazebo_gui')}.items()))
+        web_scene = {
+            'direct_motion_available': False,
+            'jog_available': True,
+            'max_jog_speed': 120.0,
+            'require_scene_ready': True,
+            'demo_target_mm': [float(v * 1000) for v in target],
+        }
+    robot_description = ParameterValue(Command(xacro_command), value_type=str)
     moveit_config = (
         MoveItConfigsBuilder('printed_arm_concept', package_name='arm_moveit_config')
         .robot_description(file_path=os.path.join(
@@ -83,24 +113,16 @@ def generate_launch_description():
         ],
     )
 
-    return LaunchDescription([
-        DeclareLaunchArgument('use_hardware', default_value='false',
-                              description='Connect to FluidNC instead of the joint simulator'),
-        DeclareLaunchArgument('rviz', default_value='true'),
-        DeclareLaunchArgument('model', default_value='arm_concept.urdf.xacro',
-                              description='Xacro model from arm_description/urdf'),
-        DeclareLaunchArgument('web_port', default_value='8080',
-                              description='Port of the web page'),
-        DeclareLaunchArgument('tcp_storage_path', default_value='~/.config/ros2_arm/tcps.json',
-                              description='Writable JSON file for named TCP offsets'),
-
+    return [
+        *gazebo_actions,
         Node(
             package='moveit_ros_move_group',
             executable='move_group',
             name='move_group',
             parameters=[moveit_config.to_dict(), {
-                # Both backends serve /arm_controller/follow_joint_trajectory.
+                # All backends serve /arm_controller/follow_joint_trajectory.
                 'allow_trajectory_execution': True,
+                'use_sim_time': gazebo,
             }],
             output='screen',
         ),
@@ -108,14 +130,15 @@ def generate_launch_description():
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
-            parameters=[{'robot_description': robot_description}],
+            parameters=[{'robot_description': robot_description, 'use_sim_time': gazebo}],
         ),
         Node(
             package='arm_sim',
             executable='joint_simulator',
             name='arm_sim',
             parameters=[{'robot_description': robot_description}],
-            condition=UnlessCondition(use_hardware),
+            condition=IfCondition(PythonExpression([
+                "'", use_hardware, "' != 'true' and ", str(not gazebo)])),
         ),
         Node(
             package='arm_web',
@@ -129,6 +152,8 @@ def generate_launch_description():
                 'robot_description': robot_description,
                 'max_velocity_scaling': ParameterValue(plan_scaling, value_type=float),
                 'max_acceleration_scaling': ParameterValue(plan_scaling, value_type=float),
+                'use_sim_time': gazebo,
+                **web_scene,
             }],
             output='screen',
         ),
@@ -137,6 +162,7 @@ def generate_launch_description():
             executable='joy_teleop',
             name='joy_teleop',
             parameters=[{'stop_service': [controller_ns, '/stop']}],
+            condition=IfCondition(str(not gazebo).lower()),
             output='screen',
         ),
         hardware,
@@ -145,7 +171,25 @@ def generate_launch_description():
             executable='rviz2',
             arguments=['-d', rviz_config],
             parameters=[moveit_config.robot_description,
-                        moveit_config.robot_description_semantic],
+                        moveit_config.robot_description_semantic,
+                        {'use_sim_time': gazebo}],
             condition=IfCondition(use_rviz),
         ),
+    ]
+
+
+def generate_launch_description():
+    return LaunchDescription([
+        DeclareLaunchArgument('use_hardware', default_value='false', choices=['true', 'false'],
+                              description='Connect to FluidNC instead of simulation'),
+        DeclareLaunchArgument('simulator', default_value='simple', choices=['simple', 'gazebo']),
+        DeclareLaunchArgument('gazebo_gui', default_value='true', choices=['true', 'false']),
+        DeclareLaunchArgument('scene_config', default_value='',
+                              description='Gazebo scene YAML; empty uses the tabletop demo'),
+        DeclareLaunchArgument('rviz', default_value='true'),
+        DeclareLaunchArgument('model', default_value='arm_concept.urdf.xacro',
+                              description='Xacro model from arm_description/urdf'),
+        DeclareLaunchArgument('web_port', default_value='8080'),
+        DeclareLaunchArgument('tcp_storage_path', default_value='~/.config/ros2_arm/tcps.json'),
+        OpaqueFunction(function=_launch),
     ])

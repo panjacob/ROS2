@@ -21,6 +21,7 @@ reads joint positions back from FluidNC status reports.
 | [src/arm_fluidnc_bridge](src/arm_fluidnc_bridge) | Python node: ROS 2 ⇄ FluidNC (G-code over serial/TCP) |
 | [src/arm_start](src/arm_start) | Launch files and parameters for sim / real hardware |
 | [src/arm_moveit_config](src/arm_moveit_config) | MoveIt 2 arm group, collision settings and OMPL planner |
+| [src/arm_gazebo](src/arm_gazebo) | Gazebo physics backend, table/banana world and matching MoveIt collision scene |
 | [src/arm_web](src/arm_web) | Web page: live state, joint/TCP planning and execution, jog, go-to, TCPs, gamepad |
 | [src/arm_teleop](src/arm_teleop) | Gamepad (`/joy`) → joint jog |
 | [firmware/fluidnc/config.yaml](firmware/fluidnc/config.yaml) | FluidNC machine config for the TinyBee (axes = joints, units = degrees) |
@@ -63,6 +64,9 @@ ros2 launch arm_start arm.launch.py
 # Optional: select the original primitive model instead
 ros2 launch arm_start arm.launch.py model:=arm.urdf.xacro
 
+# Gazebo physics: table + banana, with MoveIt and the same web panel
+ros2 launch arm_start arm.launch.py simulator:=gazebo
+
 # 3. Real hardware (edit src/arm_start/config/fluidnc_bridge.yaml first)
 #    control it at http://localhost:8080 (a connected gamepad works too)
 ros2 launch arm_start arm.launch.py use_hardware:=true
@@ -91,6 +95,14 @@ be straight. Joint/TCP previews share one stored plan; target or tool changes re
 a new preview. TCP offsets describe geometry, not additional tool collision bodies.
 For a headless run, use `rviz:=false`; change the panel port with `web_port:=8081`.
 
+In Gazebo, click **Use target above banana**, then **Preview TCP plan** and
+**Execute TCP plan**. The panel waits for the collision scene to be ready. The
+Gazebo demo supports planned moves, joint Jog and STOP; direct target moves and
+gamepad motion are unavailable. Gazebo Jog is limited to 120 degrees/s,
+without collision checking. The banana is static. Use `gazebo_gui:=false`
+to disable the Gazebo window. See [Gazebo setup and first task](docs/09-gazebo.md)
+for scene configuration and the remaining desktop validation.
+
 Run tests: `colcon test --packages-select arm_sim arm_web arm_fluidnc_bridge && colcon test-result --verbose`
 
 ## Documentation
@@ -103,6 +115,7 @@ Run tests: `colcon test --packages-select arm_sim arm_web arm_fluidnc_bridge && 
 6. [ROS 2 software](docs/06-ros2-software.md) – packages, topics, parameters, MoveIt 2 integration
 7. [Roadmap](docs/07-roadmap.md) – phased plan with checklists
 8. [Safety](docs/08-safety.md) – read before powering motors
+9. [Gazebo](docs/09-gazebo.md) – table/banana scene, TCP approach task and configuration
 
 ## Status
 

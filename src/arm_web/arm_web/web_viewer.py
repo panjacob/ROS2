@@ -38,7 +38,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from rclpy.time import Time
 from sensor_msgs.msg import JointState, Joy
-from std_msgs.msg import Float64, String
+from std_msgs.msg import Bool, Float64, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
 
@@ -167,6 +167,14 @@ class WebViewer(Node):
         self.port = int(self.declare_parameter('port', 8080).value)
         bridge_ns = self.declare_parameter('bridge_ns', '/fluidnc_bridge').value.rstrip('/')
         self.simulation = bool(self.declare_parameter('simulation', False).value)
+        self.direct_motion_available = bool(
+            self.declare_parameter('direct_motion_available', True).value)
+        self.jog_available = bool(
+            self.declare_parameter('jog_available', self.direct_motion_available).value)
+        self._jog_until = 0.0
+        self.require_scene_ready = bool(self.declare_parameter('require_scene_ready', False).value)
+        self.scene_ready = not self.require_scene_ready
+        self.demo_target_mm = list(self.declare_parameter('demo_target_mm', [0.0, 0.0, 0.0]).value)
         configured_home_joints = self.declare_parameter('home_joints', ['joint1']).value
         self.home_joints = [] if self.simulation else list(configured_home_joints)
         # FluidNC Pn letter of each home joint's endstop (same order as home_joints)
@@ -209,6 +217,8 @@ class WebViewer(Node):
 
         self.create_subscription(JointState, 'joint_states', self.store.update_joints, 10)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        if self.require_scene_ready:
+            self.create_subscription(Bool, f'{bridge_ns}/scene_ready', self._scene_readiness, latched)
         for key, msg_type in STATUS_TOPICS.items():
             qos = latched if key in LATCHED_STATUS else 10
             self.create_subscription(
@@ -234,6 +244,11 @@ class WebViewer(Node):
             'max_jog_speed': self.max_jog_speed,
             'simulation': self.simulation,
             'execution_available': True,
+            'direct_motion_available': self.direct_motion_available,
+            'jog_available': self.jog_available,
+            'jog_active': time.monotonic() < self._jog_until,
+            'scene_ready': self.scene_ready,
+            'demo_target_mm': self.demo_target_mm if self.require_scene_ready else None,
             'velocity_scaling': self.velocity_scaling,
             'reference_frame': self.reference_frame,
             'tcp_position_tolerance_mm': POSITION_TOLERANCE_M * 1000,
@@ -257,15 +272,23 @@ class WebViewer(Node):
                     status['message'] = 'Plan expired; plan again.'
             return status
 
+    def _scene_readiness(self, msg):
+        self.scene_ready = bool(msg.data)
+        if not self.scene_ready:
+            self._invalidate_plan('Waiting for the tabletop collision scene.')
+
     def _invalidate_plan(self, message='Plan invalidated by another command.'):
         with self._plan_state_lock:
-            had_plan = self._plan_record is not None
-            self._plan_generation += 1
-            self._plan_record = None
-            if self._plan_status['state'] != 'executing':
-                self._plan_status = {'state': 'none', 'message': message}
-            if had_plan:
-                self._preview_pub.publish(DisplayTrajectory())
+            self._invalidate_plan_locked(message)
+
+    def _invalidate_plan_locked(self, message='Plan invalidated by another command.'):
+        had_plan = self._plan_record is not None
+        self._plan_generation += 1
+        self._plan_record = None
+        if self._plan_status['state'] != 'executing':
+            self._plan_status = {'state': 'none', 'message': message}
+        if had_plan:
+            self._preview_pub.publish(DisplayTrajectory())
 
     def _update_tcp(self):
         tcp_config = self.tcps.snapshot()
@@ -335,14 +358,34 @@ class WebViewer(Node):
         return msg
 
     def jog(self, values):
+        if not getattr(self, 'jog_available', getattr(self, 'direct_motion_available', True)):
+            return False, 'Jog is unavailable.'
         limit = self.max_jog_speed
+        if not isinstance(values, dict) or any(
+                name not in self.joint_limits or not math.isfinite(float(value))
+                for name, value in values.items()):
+            return False, 'Jog requires known joints and finite velocities.'
         values = {k: max(-limit, min(limit, float(v))) for k, v in values.items()}
+        if getattr(self, 'require_scene_ready', False):
+            with self._plan_state_lock:
+                if self._execution_pending or self._plan_status['state'] == 'executing':
+                    return False, 'Jog is unavailable during planned execution; use STOP first.'
+                if any(values.values()):
+                    state = self.store.snapshot()
+                    if not self.scene_ready or state['joints_age'] is None or state['joints_age'] > 0.5:
+                        return False, 'Wait for the Gazebo scene and fresh joint state.'
+                    self._invalidate_plan_locked()
+                self._jog_until = time.monotonic() + (0.3 if any(values.values()) else 0.2)
+                self._jog_pub.publish(self._joint_state(values, 'velocity'))
+            return True, 'Jog sent (without collision checking)'
         if any(values.values()):
             self._invalidate_plan()
         self._jog_pub.publish(self._joint_state(values, 'velocity'))
         return True, 'ok'
 
     def goto(self, values):
+        if not getattr(self, 'direct_motion_available', True):
+            return False, 'Gazebo demo uses previewed plans; direct movement is unavailable.'
         if not values:
             return False, 'no joints given'
         self._invalidate_plan()
@@ -356,6 +399,10 @@ class WebViewer(Node):
         return self._plan(values, tcp_goal=True)
 
     def _plan(self, values, tcp_goal):
+        if time.monotonic() < getattr(self, '_jog_until', 0.0):
+            return False, 'Release Jog and wait for the arm to stop before planning.'
+        if not getattr(self, 'scene_ready', True):
+            return False, 'Waiting for the Gazebo tabletop collision scene.'
         if not self._plan_lock.acquire(blocking=False):
             return False, 'Planning is already in progress.'
         try:
@@ -543,6 +590,10 @@ class WebViewer(Node):
         return True, 'TCP endpoint verified.'
 
     def execute(self, body):
+        if time.monotonic() < getattr(self, '_jog_until', 0.0):
+            return False, 'Release Jog and preview again before executing.'
+        if not getattr(self, 'scene_ready', True):
+            return False, 'Waiting for the Gazebo tabletop collision scene; preview again.'
         plan_id = body.get('plan_id')
         with self._plan_state_lock:
             record = self._plan_record
@@ -632,7 +683,12 @@ class WebViewer(Node):
             self._preview_pub.publish(DisplayTrajectory())
         if handle is not None:
             handle.cancel_goal_async()
-        return self.call('stop')
+        result = self.call('stop')
+        if getattr(self, 'require_scene_ready', False) and hasattr(self, '_jog_pub'):
+            # Release the jog latch after STOP, so the next deliberate press works.
+            self._jog_pub.publish(self._joint_state(dict.fromkeys(self.joint_limits, 0.0), 'velocity'))
+            self._jog_until = time.monotonic() + 0.2
+        return result
 
     @staticmethod
     def _wait_future(future, timeout):
@@ -643,6 +699,8 @@ class WebViewer(Node):
         return future.result()
 
     def joy(self, axes, buttons):
+        if not getattr(self, 'direct_motion_available', True):
+            return False, 'Gazebo demo uses previewed plans; gamepad motion is unavailable.'
         msg = Joy()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.axes = [float(a) for a in axes]

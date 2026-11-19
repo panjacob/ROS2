@@ -130,6 +130,52 @@ async function main() {
   };
   await run('poll()'); assert.equal(run('planId'), null);
   assert.equal(element('tcpTargetZ').value, '3');
-  console.log('PASS: actual GUI TCP XYZ payload, shared-plan scope, freshness and mutation races');
+  // Gazebo fills a world-space target for the selected TCP and gates plans on scene readiness.
+  run(`config.demo_target_mm = [280, 35, 139]; config.direct_motion_available = false;
+    config.scene_ready = false; useDemoTarget(); updatePlanButtons()`);
+  assert.equal(element('tcpTargetX').value, '280');
+  assert.equal(element('tcpTargetY').value, '35');
+  assert.equal(element('tcpTargetZ').value, '139');
+  assert.equal(element('tcpPlanButton').disabled, true);
+  assert.equal(element('planButton').disabled, true);
+  assert.equal(element('directButton').disabled, true);
+  const noJog = requests.length;
+  run(`startJog('joint1', 1); padLoop()`);
+  assert.equal(requests.length, noJog);
+  run(`config.scene_ready = true; updatePlanButtons()`);
+  assert.equal(element('tcpPlanButton').disabled, false);
+  // Gazebo enables Jog independently of direct target moves and gamepad control.
+  run(`config.jog_available = true; config.jog_active = false;
+    latestJointsAge = 0; latestJointsReceived = Date.now(); updatePlanButtons()`);
+  assert.equal(element('jogPlus_joint1').disabled, false);
+  assert.equal(element('directButton').disabled, true);
+  pendingFetch = null;
+  await run(`startJog('joint1', 1)`);
+  assert.equal(requests.at(-1).url, '/api/jog');
+  assert.ok(requests.at(-1).body.joint1 > 0);
+  assert.equal(element('planButton').disabled, true);
+  assert.equal(element('tcpPlanButton').disabled, true);
+  await run('stopJog()');
+  assert.equal(requests.at(-1).body.joint1, 0);
+  const noExecutionJog = requests.length;
+  run('executionPending = true; updatePlanButtons()');
+  assert.equal(element('jogPlus_joint1').disabled, true);
+  await run(`startJog('joint1', 1)`);
+  assert.equal(requests.length, noExecutionJog);
+  run('executionPending = false');
+  // A delayed nonzero request must finish before the release zero is sent.
+  let resolveJog;
+  pendingFetch = (url, options) => {
+    if (url === '/api/jog' && JSON.parse(options.body).joint1 !== 0)
+      return new Promise(resolve => { resolveJog = resolve; });
+    return Promise.resolve({json: async () => ({ok: true})});
+  };
+  await run(`startJog('joint1', 1)`);
+  const release = run('stopJog()');
+  assert.ok(requests.at(-1).body.joint1 > 0);
+  resolveJog({json: async () => ({ok: true})});
+  await release;
+  assert.equal(requests.at(-1).body.joint1, 0);
+  console.log('PASS: TCP planning, freshness, mutation races and Gazebo scene controls');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

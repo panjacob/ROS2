@@ -134,6 +134,63 @@ def goal(node):
     return {'tcp_name': tcp['name'], **{f'{axis}_mm': float(value)*1000 for axis, value in zip('xyz', point)}}
 
 
+def test_gazebo_waits_for_scene_before_planning_or_execution(viewer):
+    viewer.scene_ready = False
+    assert not viewer.plan_tcp(goal(viewer))[0]
+    assert not viewer.plan({})[0]
+    assert not viewer.execute({'plan_id': 'old'})[0]
+    assert not viewer._plan_client.requests
+    viewer._scene_readiness(SimpleNamespace(data=True))
+    assert viewer.plan_tcp(goal(viewer))[0]
+    viewer._scene_readiness(SimpleNamespace(data=False))
+    assert viewer._plan_record is None
+
+
+def test_gazebo_rejects_unsupported_direct_motion(viewer):
+    viewer.direct_motion_available = False
+    assert not viewer.jog({'joint1': 5})[0]
+    assert not viewer.goto({'joint1': 5})[0]
+    assert not viewer.joy([1.0], [1])[0]
+
+
+def test_gazebo_jog_works_without_enabling_direct_moves(viewer):
+    import time
+    viewer.direct_motion_available = False
+    viewer.jog_available = True
+    viewer.require_scene_ready = viewer.scene_ready = True
+    viewer.max_jog_speed = 120.
+    viewer._joint_state = lambda values, field: (values, field)
+    published = []
+    viewer._jog_pub = SimpleNamespace(publish=published.append)
+    assert viewer.plan_tcp(goal(viewer))[0]
+    assert viewer.jog({'joint1': 200})[0]
+    assert published[-1] == ({'joint1': 120.}, 'velocity')
+    assert viewer._plan_record is None
+    assert not viewer.plan_tcp(goal(viewer))[0]
+    assert not viewer.execute({'plan_id': 'old'})[0]
+    assert not viewer.goto({'joint1': 0})[0]
+    assert viewer.jog({'joint1': 0})[0]
+    assert viewer._jog_until > time.monotonic()
+
+
+def test_gazebo_jog_does_not_preempt_planned_execution(viewer):
+    viewer.jog_available = True
+    viewer.require_scene_ready = viewer.scene_ready = True
+    viewer.max_jog_speed = 30.
+    viewer._execution_pending = True
+    assert not viewer.jog({'joint1': 5})[0]
+    viewer._execution_pending = False
+    viewer._plan_status['state'] = 'executing'
+    assert not viewer.jog({'joint1': 5})[0]
+
+
+@pytest.mark.parametrize('values', [{'unknown': 1}, {'joint1': float('nan')}, {'joint1': float('inf')}])
+def test_jog_rejects_unknown_joints_and_nonfinite_speed(viewer, values):
+    viewer.jog_available = True
+    viewer.max_jog_speed = 30.
+    assert not viewer.jog(values)[0]
+
+
 @pytest.mark.parametrize('name', ['tool0', 'bent_tool'])
 def test_position_plan_uses_collision_planner_and_verified_fk(viewer, name):
     viewer.tcps.select(name)

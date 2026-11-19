@@ -11,6 +11,7 @@
   joint5 wrist roll   -> FluidNC B
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="printed_arm">
+  <xacro:include filename="gazebo_control.xacro"/>
 
   <!-- Dimensions [m] -->
   <xacro:property name="base_h"     value="0.080"/>
@@ -59,7 +60,7 @@
       <child link="${child}"/>
       <origin xyz="0 0 ${z}" rpy="0 0 0"/>
       <axis xyz="${axis}"/>
-      <limit lower="${lower}" upper="${upper}" velocity="${vel}" effort="5.0"/>
+      <xacro:arm_joint_limit lower="${lower}" upper="${upper}" velocity="${vel}"/>
     </joint>
   </xacro:macro>
 
