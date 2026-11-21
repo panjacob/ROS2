@@ -1,25 +1,34 @@
-# NanoBee settings. Firmware units: steps, steps/s, steps/s^2. Lists are per joint J0..J4.
-# Push with:  NanoBee(host).push_config("config.yaml")   or the web page -> Settings -> Save
+# NanoBee settings for the 5-joint arm. Firmware units: steps, steps/s, steps/s^2. Lists are per joint J0..J4
+# (J0 = joint1 on X socket ... J4 = joint5 on E1 socket). 200 steps x 32 microsteps / 360 deg, direct drive.
+# Push with:  NanoBee(port="COM6").push_config("config.yaml")   or the web page -> Settings -> Save.
+# The ROS bridge (arm_nanobee_bridge) reads these values from the board at startup ("SETTINGS?").
 wifi:
   mode: ap              # ap = board makes its own network, sta = join existing network
   ssid: "NanoBee"
   password: "nanobee123" # >= 8 chars, or "" for open AP
   hostname: nanobee     # http://nanobee.local/
 motion:
-  default_speed: 1000
-  default_accel: 2000
+  default_speed: 1800   # 100 deg/s
+  default_accel: 20000  # ~1125 deg/s^2
   min_speed: 100        # start/stop speed
   jog_timeout_ms: 500   # jog stops if no J command arrives in time, 0 = off
+  blend: true           # T segments (ROS trajectories) run back to back without stopping
 joints:
-  steps_per_deg: [8.8889, 8.8889, 8.8889, 8.8889, 8.8889]  # motor steps * microsteps * gear ratio / 360
-  max_speed: [5000, 5000, 5000, 5000, 5000]
-  max_accel: [10000, 10000, 10000, 10000, 10000]
-  dir_invert: [false, false, false, false, false]
-  homing_dir: [-1, -1, -1, -1, -1]
+  steps_per_deg: [17.7778, 17.7778, 17.7778, 17.7778, 17.7778]  # motor steps * microsteps * gear ratio / 360
+  max_speed: [6400, 6400, 6400, 6400, 6400]      # 360 deg/s
+  max_accel: [53333, 53333, 53333, 53333, 53333] # 3000 deg/s^2
+  dir_invert: [true, false, false, false, false]
+  homing_dir: [-1, -1, -1, -1, -1]       # direction of the first approach to the switch
+  homing: [center, none, none, none, none]  # none | edge | center (edge/center need an endstop: J0..J2)
+  home_offset_deg: [0, 0, 0, 0, 0]       # angle assigned to the home reference (switch / switch middle)
+  soft_limits: true                      # active per joint once it is homed or set with Z
+  min_deg: [-175, -95, -140, -105, -185] # URDF limits + 5 deg
+  max_deg: [175, 95, 140, 105, 185]
 homing:
-  speed: 500
-  accel: 2000
-  backoff: 200
-  max_travel: 200000
+  enabled: true
+  speed: 1600           # 90 deg/s seek; slow touch runs at speed / 5
+  accel: 20000
+  backoff: 89           # 5 deg off the switch before the slow touch
+  max_travel: 7111      # 400 deg without finding the switch = error
 endstops:
-  active_low: true
+  active_low: false     # joint1 switch is wired normally-closed (pin reads high when pressed)

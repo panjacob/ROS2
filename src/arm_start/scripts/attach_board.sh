@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Make sure a USB device (FluidNC board, camera, ...) is available in WSL.
+# Make sure a USB device (NanoBee board, camera, ...) is available in WSL.
 # If the device node is missing (unplugged / PC rebooted), attach it from Windows with usbipd-win.
 #   attach_board.sh [device] [usb_vid:pid]    defaults: /dev/ttyUSB0 1a86:7523 (CH340 on MKS TinyBee)
 #   attach_board.sh /dev/v4l/by-id/usb-045e_USB20_Camera-video-index0 045e:00f4   (camera)

@@ -14,7 +14,7 @@ setup(
     zip_safe=True,
     maintainer='TODO',
     maintainer_email='you@example.com',
-    description='Gamepad (sensor_msgs/Joy) to joint velocity jog for the FluidNC bridge.',
+    description='Gamepad (sensor_msgs/Joy) to joint velocity jog for the NanoBee bridge.',
     license='MIT',
     tests_require=['pytest'],
     entry_points={

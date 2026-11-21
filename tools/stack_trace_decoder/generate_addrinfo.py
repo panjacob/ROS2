@@ -198,9 +198,9 @@ def shorten_path(filepath):
         if filepath.startswith(prefix):
             return replacement + filepath[len(prefix) :]
 
-    # Try to find FluidNC src path and shorten it
-    fnc_match = re.search(r"(/FluidNC/|/src/|\.pio/)", filepath)
-    if fnc_match:
+    # Try to find the firmware src path and shorten it
+    src_match = re.search(r"(/src/|\.pio/)", filepath)
+    if src_match:
         idx = filepath.find("/src/")
         if idx >= 0:
             return "src/" + filepath[idx + 5 :]

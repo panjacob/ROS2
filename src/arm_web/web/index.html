@@ -63,7 +63,7 @@
 <div class="row">
   <h1>Arm control</h1>
   <button class="stop" onclick="stopArm()">STOP</button>
-  <button id="unlock" onclick="post('/api/unlock', {})" title="Clear FluidNC alarm and re-arm plan execution after STOP or a fault">Unlock / re-arm</button>
+  <button id="unlock" onclick="post('/api/unlock', {})" title="Enable the motors and re-arm plan execution after STOP or a fault">Unlock / re-arm</button>
   <span id="conn" class="muted">connecting…</span>
 </div>
 <p id="msg" role="status" aria-live="polite"></p>
@@ -73,7 +73,6 @@
   <div class="row">
     <span>State: <b id="mstate">–</b></span>
     <span>Limit pins: <b id="pins">–</b></span>
-    <span>Feed: <b id="feed">–</b></span>
     <span>Homing: <b id="homing">–</b></span>
     <span id="executionStatusRow">Execution: <b id="trajectoryStatus">–</b></span>
   </div>
@@ -647,14 +646,14 @@ async function poll() {
     $('mstate').className = /Alarm/.test(ms) ? 'bad' : (ms === 'Idle' ? 'ok' : 'warn');
     const pins = s.status.limit_switches ? s.status.limit_switches.value : null;
     $('pins').textContent = pins === null ? '–' : (pins || 'none');
-    const es = config.endstops || {};
-    $('endstops').innerHTML = Object.keys(es).length === 0 ? '<span class="muted">none configured</span>'
-      : Object.entries(es).map(([j, p]) => {
-          const cls = pins === null ? '' : (pins.includes(p) ? 'on' : 'off');
-          const txt = pins === null ? 'no data' : (pins.includes(p) ? 'PRESSED' : 'released');
-          return `<span>${j} (pin ${p}): <span class="lamp ${cls}">${txt}</span></span>`;
+    const es = config.endstops || [];
+    const pressed = pins ? pins.split(',') : [];
+    $('endstops').innerHTML = es.length === 0 ? '<span class="muted">none configured</span>'
+      : es.map(j => {
+          const cls = pins === null ? '' : (pressed.includes(j) ? 'on' : 'off');
+          const txt = pins === null ? 'no data' : (pressed.includes(j) ? 'PRESSED' : 'released');
+          return `<span>${j}: <span class="lamp ${cls}">${txt}</span></span>`;
         }).join('');
-    const f = st('feed_rate'); $('feed').textContent = typeof f === 'number' ? f.toFixed(0) : f;
     $('homing').textContent = st('homing_status');
     $('executionStatusRow').hidden = !!config.simulation;
     const ts = st('trajectory_status');

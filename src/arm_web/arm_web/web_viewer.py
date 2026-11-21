@@ -10,14 +10,14 @@ POST /api/jog       {"joint1": deg_per_s, ...}   velocity jog (send repeatedly, 
 POST /api/goto      {"joint1": deg, ...}         absolute move -> joint_command
 POST /api/home      {"joint": "joint1"}          endstop homing of one joint
 POST /api/stop      {}                           abort everything
-POST /api/unlock    {}                           clear FluidNC alarm ($X) and re-arm execution;
-                                                 fails unless the bridge confirms $X
+POST /api/unlock    {}                           enable the motors and re-arm execution;
+                                                 fails unless the bridge confirms it
 POST /api/joy       {"axes": [...], "buttons": [...]}  browser gamepad -> /joy
 POST /api/tcp/save  {"name": "gripper", "x_mm": 0, ..., "yaw_deg": 0}
 POST /api/tcp/select {"name": "gripper"}
 POST /api/tcp/delete {"name": "gripper"}
 POST /api/plan      {"joint1": deg, ..., "joint5": deg}  plan only, preview in RViz
-POST /api/execute   {"plan_id": "..."}      execute previewed plan (simulator or FluidNC bridge)
+POST /api/execute   {"plan_id": "..."}      execute previewed plan (simulator or NanoBee bridge)
 """
 
 import json
@@ -41,7 +41,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import CompressedImage, JointState, Joy
-from std_msgs.msg import Float64, String
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
 
@@ -53,8 +53,6 @@ from arm_web.joint_planning import (check_plan_start, joint_limits_from_urdf,
 STATUS_TOPICS = {
     'machine_state': String,
     'limit_switches': String,
-    'feed_rate': Float64,
-    'spindle_speed': Float64,
     'homing_status': String,
     'trajectory_status': String,
 }
@@ -198,12 +196,10 @@ class WebViewer(Node):
         super().__init__('web_viewer')
         self.host = self.declare_parameter('host', '0.0.0.0').value
         self.port = int(self.declare_parameter('port', 8080).value)
-        bridge_ns = self.declare_parameter('bridge_ns', '/fluidnc_bridge').value.rstrip('/')
+        bridge_ns = self.declare_parameter('bridge_ns', '/nanobee_bridge').value.rstrip('/')
         self.simulation = bool(self.declare_parameter('simulation', False).value)
         configured_home_joints = self.declare_parameter('home_joints', ['joint1']).value
         self.home_joints = [] if self.simulation else list(configured_home_joints)
-        # FluidNC Pn letter of each home joint's endstop (same order as home_joints)
-        self.home_pins = list(self.declare_parameter('home_pins', ['X']).value)
         self.max_jog_speed = float(self.declare_parameter('max_jog_speed', 360.0).value)
         self.reference_frame = self.declare_parameter('reference_frame', 'world').value
         self.velocity_scaling = float(self.declare_parameter('max_velocity_scaling', 0.3).value)
@@ -269,7 +265,7 @@ class WebViewer(Node):
         tcp_config = self.tcps.snapshot()
         return {
             'home_joints': self.home_joints,
-            'endstops': dict(zip(self.home_joints, self.home_pins)),
+            'endstops': list(self.home_joints),
             'max_jog_speed': self.max_jog_speed,
             'simulation': self.simulation,
             'execution_available': True,

@@ -85,6 +85,7 @@ static bool applyKey(const String& k, const String& raw, Settings& s) {
         int32_t t;
         return toInt(v, t, 0, 60000) && (s.jogTimeoutMs = t, true);
     }
+    if (k == "motion.blend") return toBool(v, s.blend);
 
     if (k == "joints.steps_per_deg") return floatList(v, s.stepsPerDeg, 0.001, 1e6);
     if (k == "joints.max_speed") return floatList(v, s.maxSpeed, 1, hz);
@@ -109,7 +110,26 @@ static bool applyKey(const String& k, const String& raw, Settings& s) {
         memcpy(s.homingDir, tmp, sizeof(tmp));
         return true;
     }
+    if (k == "joints.homing") {  // none | edge | center per joint
+        HomingMode tmp[NUM_JOINTS];
+        if (!splitList(v, it)) return false;
+        for (int j = 0; j < NUM_JOINTS; ++j) {
+            String m = unquote(it[j]);
+            if (m == "none") tmp[j] = HOME_NONE;
+            else if (m == "edge") tmp[j] = HOME_EDGE;
+            else if (m == "center") tmp[j] = HOME_CENTER;
+            else return false;
+            if (tmp[j] != HOME_NONE && ENDSTOP_PIN[j] < 0) return false;  // no endstop input on that slot
+        }
+        memcpy(s.homing, tmp, sizeof(tmp));
+        return true;
+    }
+    if (k == "joints.home_offset_deg") return floatList(v, s.homeOffsetDeg, -100000, 100000);
+    if (k == "joints.soft_limits") return toBool(v, s.softLimits);
+    if (k == "joints.min_deg") return floatList(v, s.minDeg, -100000, 100000);
+    if (k == "joints.max_deg") return floatList(v, s.maxDeg, -100000, 100000);
 
+    if (k == "homing.enabled") return toBool(v, s.homingEnabled);
     if (k == "homing.speed") return toFloat(v, s.homingSpeed, 1, hz);
     if (k == "homing.accel") return toFloat(v, s.homingAccel, 1, 1e7);
     if (k == "homing.backoff") return toInt(v, s.homingBackoff, 0, 1000000);
@@ -167,6 +187,9 @@ bool parse(const String& yaml, Settings& out, String& err) {
             return err = "line " + String(lineNo) + ": bad or unknown setting '" + full + "'", false;
         }
     }
+    for (int j = 0; j < NUM_JOINTS; ++j) {
+        if (s.minDeg[j] >= s.maxDeg[j]) return err = "joint " + String(j) + ": min_deg must be below max_deg", false;
+    }
     out = s;
     return true;
 }
@@ -190,6 +213,7 @@ String toYaml(const Settings& s) {
     y += "  default_accel: " + String(s.defaultAccel, 0) + "\n";
     y += "  min_speed: " + String(s.minSpeed, 0) + "\n";
     y += "  jog_timeout_ms: " + String(s.jogTimeoutMs) + "\n";
+    y += "  blend: " + String(s.blend ? "true" : "false") + "\n";
     y += "joints:\n";
     y += "  steps_per_deg: " + list(s.stepsPerDeg, 4) + "\n";
     y += "  max_speed: " + list(s.maxSpeed) + "\n";
@@ -198,8 +222,16 @@ String toYaml(const Settings& s) {
     for (int j = 0; j < NUM_JOINTS; ++j) y += String(j ? ", " : "") + (s.dirInvert[j] ? "true" : "false");
     y += "]\n  homing_dir: [";
     for (int j = 0; j < NUM_JOINTS; ++j) y += String(j ? ", " : "") + String(s.homingDir[j]);
+    y += "]\n  homing: [";
+    static const char* MODES[] = { "none", "edge", "center" };
+    for (int j = 0; j < NUM_JOINTS; ++j) y += String(j ? ", " : "") + MODES[s.homing[j]];
     y += "]\n";
+    y += "  home_offset_deg: " + list(s.homeOffsetDeg, 3) + "\n";
+    y += "  soft_limits: " + String(s.softLimits ? "true" : "false") + "\n";
+    y += "  min_deg: " + list(s.minDeg, 3) + "\n";
+    y += "  max_deg: " + list(s.maxDeg, 3) + "\n";
     y += "homing:\n";
+    y += "  enabled: " + String(s.homingEnabled ? "true" : "false") + "\n";
     y += "  speed: " + String(s.homingSpeed, 0) + "\n";
     y += "  accel: " + String(s.homingAccel, 0) + "\n";
     y += "  backoff: " + String(s.homingBackoff) + "\n";
@@ -211,7 +243,7 @@ String toYaml(const Settings& s) {
 
 void begin() {
     if (!LittleFS.begin(true)) {
-        Serial.println("err LittleFS mount failed, using defaults");
+        Serial.println("# err LittleFS mount failed, using defaults");
         return;
     }
     File f = LittleFS.open(PATH, "r");
@@ -219,8 +251,10 @@ void begin() {
     String yaml = f.readString();
     f.close();
     String err;
-    if (!parse(yaml, cfg, err)) Serial.println("err config.yaml " + err + ", using defaults");
+    if (!parse(yaml, cfg, err)) Serial.println("# err config.yaml " + err + ", using defaults");
 }
+
+String effectiveYaml() { return toYaml(cfg); }
 
 String currentYaml() {
     File f = LittleFS.open(PATH, "r");

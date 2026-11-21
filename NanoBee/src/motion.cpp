@@ -1,5 +1,7 @@
 // Step generation: one timer ISR computes per-joint trapezoidal ramps (integer only)
 // and writes STEP/DIR/EN to the TinyBee's 74HC595 chain by bit-banging the I2S pins.
+// Timed segments (T command) run all joints at constant speed with Bresenham stepping and
+// hand over to the next queued segment in the same tick, so a stream of segments never stops.
 
 #include "motion.h"
 #include "settings.h"
@@ -8,7 +10,7 @@
 
 namespace Motion {
 
-enum Mode : uint8_t { IDLE, POS, VEL };
+enum Mode : uint8_t { IDLE, POS, VEL, SEG };
 
 // Velocities are Q32.32 steps per tick: 1 << 32 == one step every tick.
 static constexpr int64_t ONE_STEP = 1LL << 32;
@@ -27,12 +29,34 @@ struct Joint {
     bool     dirPos;
 };
 
+struct Segment {
+    int32_t  delta[NUM_JOINTS];
+    int64_t  vel[NUM_JOINTS];  // Q32.32, used to decelerate if the stream ends while moving
+    uint32_t ticks;
+};
+
+static constexpr int SEG_LEN = 16;
+
 static Joint          joints[NUM_JOINTS];
 static portMUX_TYPE   mux        = portMUX_INITIALIZER_UNLOCKED;
 static volatile uint32_t enBits  = 0;
 static uint32_t       lastOut    = 0xFFFFFFFF;
 static bool           motorsOn   = false;
 static hw_timer_t*    timer      = nullptr;
+
+static Segment  segBuf[SEG_LEN];
+static int      segHead = 0, segCount = 0;
+static bool     segRun  = false;
+static Segment  segCur;
+static uint32_t segT = 0;
+static uint32_t segErr[NUM_JOINTS];
+static int32_t  segEnd[NUM_JOINTS];    // position at the end of the last queued segment
+static int64_t  stopDa[NUM_JOINTS];    // deceleration used when a segment stream stops
+static int64_t  stopVmin[NUM_JOINTS];
+static bool     underrun = false;
+
+static bool    limOn[NUM_JOINTS];
+static int32_t limLo[NUM_JOINTS], limHi[NUM_JOINTS];
 
 static constexpr uint32_t BCK  = 1u << PIN_SR_BCK;
 static constexpr uint32_t WS   = 1u << PIN_SR_WS;
@@ -51,15 +75,73 @@ static void IRAM_ATTR shiftOut(uint32_t v) {
     REG_WRITE(GPIO_OUT_W1TS_REG, WS);
 }
 
+// Must hold mux.
+static void IRAM_ATTR startNextSegment() {
+    segCur = segBuf[segHead];
+    segHead = (segHead + 1) % SEG_LEN;
+    --segCount;
+    segT   = 0;
+    segRun = true;
+    for (int j = 0; j < NUM_JOINTS; ++j) {
+        segErr[j]      = segCur.ticks / 2;
+        joints[j].mode = SEG;
+    }
+}
+
+// Must hold mux. Leaves segment mode; joints still moving decelerate at their max_accel.
+static void IRAM_ATTR endSegments(bool flagUnderrun) {
+    segRun = false;
+    for (int j = 0; j < NUM_JOINTS; ++j) {
+        Joint&  J = joints[j];
+        int64_t v = segCur.vel[j];
+        J.ramp    = 0;
+        if (iabs64(v) >= stopVmin[j]) {
+            if (flagUnderrun) underrun = true;
+            J.vel   = v;
+            J.vgoal = 0;
+            J.da    = stopDa[j];
+            J.vmin  = stopVmin[j];
+            J.mode  = VEL;
+        } else {
+            J.vel  = 0;
+            J.mode = IDLE;
+        }
+    }
+}
+
 static void IRAM_ATTR onTick() {
     uint32_t steps = 0;
     uint32_t out   = enBits;
 
     portENTER_CRITICAL_ISR(&mux);
-    for (int j = 0; j < NUM_JOINTS; ++j) {
-        Joint& J = joints[j];
-        if (J.mode != IDLE) {
-            int64_t v  = J.vel;
+    if (!segRun && segCount) startNextSegment();
+
+    if (segRun) {
+        for (int j = 0; j < NUM_JOINTS; ++j) {
+            Joint&  J = joints[j];
+            int32_t d = segCur.delta[j];
+            if (d) {
+                J.dirPos = d > 0;
+                segErr[j] += d > 0 ? d : -d;
+                if (segErr[j] >= segCur.ticks) {
+                    segErr[j] -= segCur.ticks;
+                    J.pos += J.dirPos ? 1 : -1;
+                    steps |= 1u << STEP_BIT[j];
+                }
+            }
+        }
+        if (++segT >= segCur.ticks) {
+            if (segCount) {
+                startNextSegment();
+            } else {
+                endSegments(true);
+            }
+        }
+    } else {
+        for (int j = 0; j < NUM_JOINTS; ++j) {
+            Joint& J = joints[j];
+            if (J.mode != POS && J.mode != VEL) continue;
+            int64_t v   = J.vel;
             int64_t av0 = iabs64(v);
             int64_t goal;
             int32_t d = 0;
@@ -70,13 +152,18 @@ static void IRAM_ATTR onTick() {
                     J.vel  = 0;
                     J.ramp = 0;
                     J.mode = IDLE;
-                    goto dirbit;
+                    continue;
                 }
                 bool toward = (d > 0 && v >= 0) || (d < 0 && v <= 0);
                 int32_t ad  = d < 0 ? -d : d;
                 goal        = (!toward || ad <= J.ramp) ? 0 : (d > 0 ? J.vmax : -J.vmax);
             } else {
                 goal = J.vgoal;
+                // Soft limits: start braking when the remaining room equals the stopping distance.
+                if (limOn[j]) {
+                    if (goal > 0 && limHi[j] - J.pos <= J.ramp + 1) goal = 0;
+                    if (goal < 0 && J.pos - limLo[j] <= J.ramp + 1) goal = 0;
+                }
             }
 
             if (v < goal) {
@@ -118,8 +205,9 @@ static void IRAM_ATTR onTick() {
                 J.mode = IDLE;
             }
         }
-    dirbit:
-        if (J.dirPos != cfg.dirInvert[j]) out |= 1u << DIR_BIT[j];
+    }
+    for (int j = 0; j < NUM_JOINTS; ++j) {
+        if (joints[j].dirPos != cfg.dirInvert[j]) out |= 1u << DIR_BIT[j];
     }
     portEXIT_CRITICAL_ISR(&mux);
 
@@ -207,6 +295,67 @@ void moveTo(const int32_t target[NUM_JOINTS], float speed, float accel) {
     portEXIT_CRITICAL(&mux);
 }
 
+bool pushSegment(const int32_t target[NUM_JOINTS], uint32_t ticks) {
+    if (ticks == 0) ticks = 1;
+    int64_t da[NUM_JOINTS], vmin[NUM_JOINTS];
+    for (int j = 0; j < NUM_JOINTS; ++j) {
+        da[j]   = toQaccel(cfg.maxAccel[j]);
+        vmin[j] = toQ(cfg.minSpeed);
+    }
+
+    portENTER_CRITICAL(&mux);
+    bool busy = segCount == SEG_LEN;
+    for (auto& J : joints) busy |= J.mode == POS || J.mode == VEL;
+    if (busy) {
+        portEXIT_CRITICAL(&mux);
+        return false;
+    }
+    if (!segRun && !segCount) {
+        for (int j = 0; j < NUM_JOINTS; ++j) segEnd[j] = joints[j].pos;
+    }
+    Segment& s = segBuf[(segHead + segCount) % SEG_LEN];
+    for (int j = 0; j < NUM_JOINTS; ++j) {
+        s.delta[j]   = target[j] - segEnd[j];
+        uint32_t ad = s.delta[j] < 0 ? -s.delta[j] : s.delta[j];
+        if (ad > ticks) ticks = ad;  // at most one step per tick
+    }
+    s.ticks = ticks;
+    for (int j = 0; j < NUM_JOINTS; ++j) {
+        s.vel[j]    = ((int64_t)s.delta[j] << 32) / (int64_t)ticks;
+        segEnd[j]   = target[j];
+        stopDa[j]   = da[j];
+        stopVmin[j] = vmin[j];
+    }
+    ++segCount;
+    portEXIT_CRITICAL(&mux);
+    setEnabled(true);
+    return true;
+}
+
+int segmentFree() {
+    portENTER_CRITICAL(&mux);
+    int n = SEG_LEN - segCount;
+    portEXIT_CRITICAL(&mux);
+    return n;
+}
+
+bool takeUnderrun() {
+    portENTER_CRITICAL(&mux);
+    bool u   = underrun;
+    underrun = false;
+    portEXIT_CRITICAL(&mux);
+    return u;
+}
+
+void setLimit(int j, bool on, int32_t lo, int32_t hi) {
+    if (j < 0 || j >= NUM_JOINTS) return;
+    portENTER_CRITICAL(&mux);
+    limOn[j] = on;
+    limLo[j] = lo;
+    limHi[j] = hi;
+    portEXIT_CRITICAL(&mux);
+}
+
 void jogJoint(int j, float vel, float accel) {
     if (j < 0 || j >= NUM_JOINTS) return;
     float lim = cfg.maxSpeed[j] < STEP_TICK_HZ ? cfg.maxSpeed[j] : STEP_TICK_HZ;
@@ -218,7 +367,7 @@ void jogJoint(int j, float vel, float accel) {
     int64_t q = vel == 0 ? 0 : toQ(fabsf(vel));
     portENTER_CRITICAL(&mux);
     Joint& J = joints[j];
-    if (vel == 0 && J.mode == IDLE) {
+    if ((vel == 0 && J.mode == IDLE) || J.mode == SEG) {
         portEXIT_CRITICAL(&mux);
         return;
     }
@@ -235,6 +384,8 @@ void jog(const float vel[NUM_JOINTS], float accel) {
 
 void stop() {
     portENTER_CRITICAL(&mux);
+    segCount = 0;
+    if (segRun) endSegments(false);
     for (auto& J : joints) {
         if (J.mode != IDLE) {
             J.vgoal = 0;
@@ -254,6 +405,10 @@ void haltJoint(int j) {
 }
 
 void halt() {
+    portENTER_CRITICAL(&mux);
+    segCount = 0;
+    segRun   = false;
+    portEXIT_CRITICAL(&mux);
     for (int j = 0; j < NUM_JOINTS; ++j) haltJoint(j);
 }
 
@@ -265,10 +420,11 @@ bool jointIdle(int j) {
 }
 
 bool idle() {
-    for (int j = 0; j < NUM_JOINTS; ++j) {
-        if (!jointIdle(j)) return false;
-    }
-    return true;
+    portENTER_CRITICAL(&mux);
+    bool r = !segRun && !segCount;
+    for (auto& J : joints) r &= J.mode == IDLE;
+    portEXIT_CRITICAL(&mux);
+    return r;
 }
 
 bool anyJogging() {

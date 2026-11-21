@@ -15,7 +15,7 @@ setup(
     zip_safe=True,
     maintainer='TODO',
     maintainer_email='you@example.com',
-    description='Web page showing live arm state and controlling the FluidNC bridge.',
+    description='Web page showing live arm state and controlling the NanoBee bridge.',
     license='MIT',
     tests_require=['pytest'],
     entry_points={

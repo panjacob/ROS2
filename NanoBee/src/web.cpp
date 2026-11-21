@@ -15,7 +15,7 @@ static const char* FALLBACK_AP_PASS = "nanobee123";
 static void startAp(const char* ssid, const char* pass) {
     WiFi.mode(WIFI_AP);
     WiFi.softAP(ssid, (pass && strlen(pass) >= 8) ? pass : nullptr);
-    Serial.printf("WiFi AP \"%s\"  http://%s/\n", ssid, WiFi.softAPIP().toString().c_str());
+    Serial.printf("# WiFi AP \"%s\"  http://%s/\n", ssid, WiFi.softAPIP().toString().c_str());
 }
 
 static void startWifi() {
@@ -26,10 +26,10 @@ static void startWifi() {
         uint32_t t0 = millis();
         while (WiFi.status() != WL_CONNECTED && millis() - t0 < 10000) delay(100);
         if (WiFi.status() == WL_CONNECTED) {
-            Serial.printf("WiFi connected  http://%s/  http://%s.local/\n", WiFi.localIP().toString().c_str(),
+            Serial.printf("# WiFi connected  http://%s/  http://%s.local/\n", WiFi.localIP().toString().c_str(),
                           cfg.hostname.c_str());
         } else {
-            Serial.println("WiFi connect failed, starting fallback AP");
+            Serial.println("# WiFi connect failed, starting fallback AP");
             startAp(FALLBACK_AP_SSID, FALLBACK_AP_PASS);
         }
     } else {
@@ -54,6 +54,8 @@ void begin() {
     server.on("/status", HTTP_GET, [] { sendText(200, statusLine() + "\n" + takeEvents()); });
 
     server.on("/config", HTTP_GET, [] { sendText(200, SettingsStore::currentYaml()); });
+
+    server.on("/settings", HTTP_GET, [] { sendText(200, SettingsStore::effectiveYaml()); });
 
     server.on("/config", HTTP_POST, [] {
         if (!machineIdle()) return sendText(409, "err machine busy, stop first");

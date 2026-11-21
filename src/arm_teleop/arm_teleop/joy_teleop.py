@@ -1,7 +1,7 @@
 """Gamepad -> joint velocity jog.
 
   sub  joy  sensor_msgs/Joy        (from the web page, browser "standard" gamepad layout)
-  pub  jog  sensor_msgs/JointState (velocity [rad/s] per joint, consumed by fluidnc_bridge)
+  pub  jog  sensor_msgs/JointState (velocity [rad/s] per joint, consumed by nanobee_bridge)
 
 Default layout (Xbox naming): left stick X -> joint1, left stick Y -> joint2,
 right stick Y -> joint3, right stick X -> joint4, LB/RB -> joint5, B -> stop.
@@ -76,7 +76,7 @@ class JoyTeleop(Node):
         self._stop_button = int(self.declare_parameter('stop_button', 1).value)
         self._joy_timeout = float(self.declare_parameter('joy_timeout', 0.5).value)
         rate = float(self.declare_parameter('rate', 20.0).value)
-        stop_service = self.declare_parameter('stop_service', '/fluidnc_bridge/stop').value
+        stop_service = self.declare_parameter('stop_service', '/nanobee_bridge/stop').value
 
         self._jog_pub = self.create_publisher(JointState, 'jog', 10)
         self._stop_client = self.create_client(Trigger, stop_service)

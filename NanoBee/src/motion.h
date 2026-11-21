@@ -12,12 +12,23 @@ bool enabled();
 // Synchronized absolute move in steps; speed/accel apply to the joint with the longest travel.
 void moveTo(const int32_t target[NUM_JOINTS], float speed, float accel);
 
+// Timed segment: every joint moves at constant speed to `target` in `ticks` ISR ticks.
+// Segments queued back to back run without stopping in between (blending). If the buffer runs
+// empty while moving, joints decelerate at max_accel. Returns false when the buffer is full or a
+// move/jog is running.
+bool pushSegment(const int32_t target[NUM_JOINTS], uint32_t ticks);
+int  segmentFree();
+bool takeUnderrun();  // true once after the segment stream ended while still moving
+
 // Per-joint velocity in steps/s (signed).
 void jog(const float vel[NUM_JOINTS], float accel);
 void jogJoint(int j, float vel, float accel);
 
-void stop();             // decelerate all joints to zero
-void halt();             // stop all joints immediately
+// Jogs decelerate to a stop before leaving [lo, hi] (steps) while `on`.
+void setLimit(int j, bool on, int32_t lo, int32_t hi);
+
+void stop();             // decelerate all joints to zero, drop queued segments
+void halt();             // stop all joints immediately, drop queued segments
 void haltJoint(int j);
 
 bool idle();

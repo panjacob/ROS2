@@ -109,20 +109,11 @@ stop the launch with Ctrl+C and run `ros2 launch arm_description display.launch.
 
 ## 2.4 Connecting to the TinyBee
 
-### Option A – Wi-Fi (simplest with WSL2)
+ROS talks to NanoBee over **USB serial only** (`/dev/ttyUSB0`, 115200, set in
+[nanobee_bridge.yaml](../src/arm_start/config/nanobee_bridge.yaml)). NanoBee's Wi-Fi web page
+(<http://192.168.4.1/>, see [04](04-nanobee-setup.md#43-connect)) is for setup and testing only.
 
-FluidNC exposes a telnet server on port 23. No USB passthrough needed.
-Set in [fluidnc_bridge.yaml](../src/arm_start/config/fluidnc_bridge.yaml):
-
-```yaml
-transport: tcp
-host: fluidnc.local   # or the board IP
-```
-
-If `fluidnc.local` does not resolve inside WSL, use the IP address shown in the FluidNC
-startup log (`$SS`) or your router.
-
-### Option B – USB serial via usbipd-win
+### USB serial via usbipd-win
 
 The TinyBee uses a CH340 USB-UART. In Windows PowerShell (admin):
 
@@ -144,11 +135,12 @@ ls /dev/ttyUSB*                      # expect /dev/ttyUSB0
 sudo usermod -aG dialout $USER       # then restart the WSL shell
 ```
 
-While attached to WSL the port is **not** available to Windows tools (FluidTerm, WebInstaller).
-Detach with `usbipd detach --busid 2-3`.
+While attached to WSL the port is **not** available to Windows tools (PlatformIO upload/monitor,
+NanoBeeDriver). Detach with `usbipd detach --busid 2-3`.
 
-> Opening the serial port toggles DTR and **reboots the ESP32**. The bridge tolerates this,
-> but expect ~2 s of boot messages after start.
+> The bridge opens the port with DTR/RTS low, so connecting does not reset the ESP32. Other
+> terminals may toggle DTR and **reboot the board** (position and home reference are lost);
+> the bridge then disarms trajectory execution and re-reads the settings.
 
 ### 2.4.1 USB camera (Microsoft LifeCam VX-6000)
 
@@ -219,8 +211,8 @@ virtual camera with ffmpeg and serves it as MJPEG; the `camera2` node in WSL rea
 | `rqt`, `rqt_graph` | Inspect topics/nodes |
 | `ros2 topic echo /joint_states` | Check feedback |
 | `check_urdf`, `xacro arm.urdf.xacro > /tmp/arm.urdf` | Validate model |
-| FluidNC WebUI (`http://fluidnc.local`) | Jogging, config upload, console |
-| `screen /dev/ttyUSB0 115200` or `python3 -m serial.tools.miniterm` | Raw FluidNC console |
+| NanoBee web page (`http://192.168.4.1/`, `http://nanobee.local/`) | Jogging, homing, settings upload |
+| `screen /dev/ttyUSB0 115200` or `python3 -m serial.tools.miniterm` | Raw NanoBee console (stop the bridge first) |
 | Git + Git LFS | Version STL/STEP files |
 
 ## 2.6 Native Windows / Docker (alternatives)

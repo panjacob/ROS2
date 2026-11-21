@@ -1,7 +1,7 @@
 """Bring up the arm.
 
   ros2 launch arm_start arm.launch.py                       # joint simulator + web panel + RViz
-  ros2 launch arm_start arm.launch.py use_hardware:=true    # real arm through FluidNC
+  ros2 launch arm_start arm.launch.py use_hardware:=true    # real arm through NanoBee
   ros2 launch arm_start arm.launch.py camera:=false         # without the USB camera
   ros2 launch arm_start arm.launch.py camera2:=false        # without the phone camera (Telescope)
   ros2 launch arm_start arm.launch.py camera_width:=640 camera_height:=480  # native Linux host
@@ -9,7 +9,7 @@
 Web page (state, camera, jog, go-to, homing, gamepad) at http://localhost:8080 (web_port:=...).
 A gamepad connected to the browser always works (browser -> /joy -> joy_teleop -> /jog).
 MoveIt executes plans through /arm_controller/follow_joint_trajectory, served by the simulator
-or, with use_hardware:=true, by the FluidNC bridge (planned at 0.1 speed scaling, 0.3 in sim).
+or, with use_hardware:=true, by the NanoBee bridge (planned at 0.1 speed scaling, 0.3 in sim).
 """
 
 import os
@@ -33,7 +33,7 @@ def generate_launch_description():
     tcp_storage_path = LaunchConfiguration('tcp_storage_path')
     model = LaunchConfiguration('model')
     controller_ns = PythonExpression([
-        "'/fluidnc_bridge' if '", use_hardware, "' == 'true' else '/arm_sim'"])
+        "'/nanobee_bridge' if '", use_hardware, "' == 'true' else '/arm_sim'"])
     simulation = PythonExpression([
         "'false' if '", use_hardware, "' == 'true' else 'true'"])
     # Planned motion runs slower on the real arm until it has been validated there.
@@ -43,7 +43,7 @@ def generate_launch_description():
     xacro_file = PathJoinSubstitution(
         [FindPackageShare('arm_description'), 'urdf', model])
     bridge_config = PathJoinSubstitution(
-        [FindPackageShare('arm_start'), 'config', 'fluidnc_bridge.yaml'])
+        [FindPackageShare('arm_start'), 'config', 'nanobee_bridge.yaml'])
     rviz_config = PathJoinSubstitution(
         [FindPackageShare('arm_description'), 'rviz', 'arm.rviz'])
     robot_description = ParameterValue(Command(['xacro ', xacro_file]), value_type=str)
@@ -72,9 +72,9 @@ def generate_launch_description():
         output='screen',
     )
     bridge = Node(
-        package='arm_fluidnc_bridge',
-        executable='fluidnc_bridge',
-        name='fluidnc_bridge',
+        package='arm_nanobee_bridge',
+        executable='nanobee_bridge',
+        name='nanobee_bridge',
         parameters=[bridge_config, {'robot_description': robot_description}],
         output='screen',
     )
@@ -143,7 +143,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('use_hardware', default_value='false',
-                              description='Connect to FluidNC instead of the joint simulator'),
+                              description='Connect to the NanoBee board instead of the joint simulator'),
         DeclareLaunchArgument('rviz', default_value='true'),
         DeclareLaunchArgument('model', default_value='arm_concept.urdf.xacro',
                               description='Xacro model from arm_description/urdf'),

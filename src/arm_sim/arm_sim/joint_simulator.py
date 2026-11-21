@@ -1,6 +1,5 @@
-"""ROS interface for a simple joint simulator, using the FluidNC bridge topics."""
+"""ROS interface for a simple joint simulator, using the NanoBee bridge topics."""
 
-import math
 import threading
 import time
 
@@ -12,7 +11,7 @@ from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64, String
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from arm_sim.motion import JointMotion, joints_from_urdf
@@ -41,8 +40,6 @@ class JointSimulator(Node):
         self._joint_pub = self.create_publisher(JointState, 'joint_states', 10)
         self._state_pub = self.create_publisher(String, '~/machine_state', 10)
         self._pins_pub = self.create_publisher(String, '~/limit_switches', 10)
-        self._feed_pub = self.create_publisher(Float64, '~/feed_rate', 10)
-        self._spindle_pub = self.create_publisher(Float64, '~/spindle_speed', 10)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._homing_pub = self.create_publisher(String, '~/homing_status', latched)
         self.create_subscription(JointState, 'joint_command', self._on_command, 10)
@@ -136,7 +133,6 @@ class JointSimulator(Node):
         dt = min(now - self._last_tick, 0.1)
         self._last_tick = now
         with self._motion_lock:
-            previous = self.motion.position.copy()
             moving = self.motion.step(dt, now)
             positions = self.motion.position.copy()
         msg = JointState()
@@ -146,10 +142,6 @@ class JointSimulator(Node):
         self._joint_pub.publish(msg)
         self._state_pub.publish(String(data='Run' if moving else 'Idle'))
         self._pins_pub.publish(String(data=''))
-        distance = math.sqrt(sum((positions[name] - value) ** 2
-                                 for name, value in previous.items()))
-        self._feed_pub.publish(Float64(data=math.degrees(distance / dt) * 60 if dt > 0 else 0.0))
-        self._spindle_pub.publish(Float64(data=0.0))
 
 
 def main(args=None):

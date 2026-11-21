@@ -6,8 +6,8 @@
 |---------|------|---------|
 | `arm_description` | ament_cmake | `urdf/arm.urdf.xacro`, `meshes/`, `launch/display.launch.py` |
 | `arm_sim` | ament_python | Joint simulator for panel direct/jog/gamepad commands; publishes `/joint_states` |
-| `arm_fluidnc_bridge` | ament_python | `fluidnc_bridge` node; `fluidnc_protocol.py` (pure, unit tested) |
-| `arm_start` | ament_cmake | `launch/arm.launch.py`, `config/fluidnc_bridge.yaml` |
+| `arm_nanobee_bridge` | ament_python | `nanobee_bridge` node; `nanobee_protocol.py` and `trajectory.py` (pure, unit tested) |
+| `arm_start` | ament_cmake | `launch/arm.launch.py`, `config/nanobee_bridge.yaml`, `scripts/attach_board.sh` |
 | `arm_web` | ament_python | `web_viewer` node: web page (default http://localhost:8080) with live state, STOP/unlock, hold-to-jog, go-to, endstop homing and browser gamepad forwarding |
 | `arm_teleop` | ament_python | `joy_teleop` node: `/joy` → `/jog` velocities (always started) |
 | `arm_camera` | ament_python | `camera_node`: USB camera (OpenCV/V4L2) → `/camera/image_raw` (bgr8) and `/camera/image_raw/compressed` (JPEG); started unless `camera:=false`. A second instance `camera2` reads the phone camera from a stream URL (`camera2_device`, default `http://{windows_host}:8081/stream.mjpg`) → `/camera2/image_raw[/compressed]` (`camera2_link`); started unless `camera2:=false` |
@@ -17,95 +17,103 @@ Planned:
 
 | Package | Purpose |
 |---------|---------|
-| `arm_hardware` | C++ `ros2_control` `SystemInterface` for FluidNC (replaces the topic bridge) |
+| `arm_hardware` | C++ `ros2_control` `SystemInterface` for NanoBee (replaces the topic bridge) |
 | `arm_gripper` | Gripper driver/action server |
 | `arm_apps` | Task-level nodes (pick & place, teleop, vision) |
 
-## 6.2 `fluidnc_bridge` node
+## 6.2 `nanobee_bridge` node
 
-Source: [fluidnc_bridge.py](../src/arm_fluidnc_bridge/arm_fluidnc_bridge/fluidnc_bridge.py)
+Source: [nanobee_bridge.py](../src/arm_nanobee_bridge/arm_nanobee_bridge/nanobee_bridge.py)
 
 | Interface | Type | Description |
 |-----------|------|-------------|
-| `joint_states` (pub) | `sensor_msgs/JointState` | Positions [rad] from FluidNC work position (`WPos` = `MPos` − `WCO`) at `status_rate` Hz |
-| `~/machine_state` (pub) | `std_msgs/String` | FluidNC state: `Idle`/`Run`/`Jog`/`Hold`/`Home`/`Alarm`/`Door` |
-| `~/feed_rate` (pub) | `std_msgs/Float64` | Current feed rate [deg/min] from the `FS`/`F` status field |
-| `~/spindle_speed` (pub) | `std_msgs/Float64` | Current spindle speed from the `FS` status field |
-| `~/limit_switches` (pub) | `std_msgs/String` | Triggered pins from `Pn` (e.g. `XYZ`, probe `P`); empty when none |
-| `joint_command` (sub) | `sensor_msgs/JointState` | Absolute target [rad] for named joints, moved at `max_feed` (ignored while a trajectory goal is active) |
-| `joint_trajectory` (sub) | `trajectory_msgs/JointTrajectory` | Unconfirmed legacy path: points sent as `G1` segments, feed derived from `time_from_start`, no limit checks or completion (ignored while a trajectory goal is active). Prefer the action |
-| `jog` (sub) | `sensor_msgs/JointState` | Velocity jog: `velocity` [rad/s] per named joint (others 0). Must be re-sent within `jog_timeout`; zero/stale → jog cancel. Ignored while a trajectory goal is active |
+| `joint_states` (pub) | `sensor_msgs/JointState` | Positions [rad] = board steps (`P:` in the status report) / `steps_per_deg`, at `status_rate` Hz (20) |
+| `~/machine_state` (pub) | `std_msgs/String` | NanoBee state: `Idle`/`Run`/`Jog`/`Home`, with ` motors off` appended while the drivers are disabled |
+| `~/limit_switches` (pub) | `std_msgs/String` | Comma-separated joints whose endstop is pressed (e.g. `joint1`); empty when none |
+| `joint_command` (sub) | `sensor_msgs/JointState` | Absolute target [rad] for named joints, one `M` move at `move_speed` (0 = board `motion.default_speed`); ignored while a trajectory goal is active or homing runs |
+| `joint_trajectory` (sub) | `trajectory_msgs/JointTrajectory` | Unconfirmed legacy path: one `T` segment per point (+ final deceleration ramp), no URDF limit checks or completion (ignored while a trajectory goal is active or a previous one still streams). Prefer the action |
+| `jog` (sub) | `sensor_msgs/JointState` | Velocity jog: `velocity` [rad/s] per named joint (others 0), sent as `J` at `jog_rate`, clamped to `max_jog_speed` and the board's `max_speed`. Must be re-sent within `jog_timeout`; zero/stale → jog stops. Ignored while a trajectory goal is active |
 | `/arm_controller/follow_joint_trajectory` (action) | `control_msgs/FollowJointTrajectory` | MoveIt execution on the real arm, see [Trajectory execution](#trajectory-execution-on-hardware) |
 | `~/trajectory_status` (pub, latched) | `std_msgs/String` | Armed / executing / result / disarm reason of trajectory execution |
-| `~/home` (srv) | `std_srvs/Trigger` | `$H` (refused while a trajectory goal is active) |
-| `~/home_<joint>` (srv) | `std_srvs/Trigger` | Endstop homing of one joint (`homing_joints`): seek left to the switch, then right to the switch (each with slow re-touch); the middle becomes 0° |
+| `~/home` (srv) | `std_srvs/Trigger` | `H`: home every joint with `joints.homing` ≠ `none` (board must be `Idle`; refused while jogging, streaming or a trajectory goal is active) |
+| `~/home_<joint>` (srv) | `std_srvs/Trigger` | `H j`: home one joint; only created for joints with a homing mode (joint1, `center`: switch found from both sides, the middle becomes `home_offset_deg`) |
 | `~/homing_status` (pub, latched) | `std_msgs/String` | Homing progress / result text |
-| `~/unlock` (srv) | `std_srvs/Trigger` | `$X`; also the deliberate re-arm of trajectory execution after STOP or a fault. Arms only after `$X` is answered `ok` and a status report requested afterwards is not `Alarm`; otherwise (error, no `ok` within ~3 s, still Alarm, STOP meanwhile) it fails and execution stays disarmed. Refused while a STOP is still waiting for the arm to stop. Never homes |
-| `~/stop` (srv) | `std_srvs/Trigger` | Abort homing, cancel jog, abort the trajectory goal, drop queued lines, feed hold, then soft reset once fresh status reports confirm the stop; disarms trajectory execution until `~/unlock` |
+| `~/stop` (srv) | `std_srvs/Trigger` | `S`: decelerate to a stop, drop queued motion, cancel homing; aborts the trajectory goal and jog. If `S` is not acknowledged the instant halt `!` is sent. Disarms trajectory execution until `~/unlock` |
+| `~/unlock` (srv) | `std_srvs/Trigger` | `E 1` (enable the motors) and re-arm trajectory execution after STOP or a fault; fails (stays disarmed) if the board does not answer `ok`. Refused while a trajectory goal is active. Never homes |
+| `~/motors` (srv) | `std_srvs/SetBool` | `E 1` / `E 0`: enable / disable the drivers. Disabled joints can be moved by hand; the board then forgets the home reference |
+| `~/set_zero` (srv) | `std_srvs/Trigger` | `Z`: joints that are not referenced (homed or zeroed) get position 0; referenced joints keep theirs. Board must be `Idle` |
+| `~/reload_settings` (srv) | `std_srvs/Trigger` | Read the board settings again (`SETTINGS?`) after changing its config.yaml |
 
-Parameters: see [fluidnc_bridge.yaml](../src/arm_start/config/fluidnc_bridge.yaml).
+Parameters: see [nanobee_bridge.yaml](../src/arm_start/config/nanobee_bridge.yaml) (serial port,
+joint names in firmware order, rates, timeouts, trajectory tolerances, jog limits). Steps per
+degree, speed/acceleration limits, homing modes and soft limits are **not** bridge parameters:
+they are read from the board at startup (`SETTINGS?`), so the board's
+[config.yaml](../NanoBee/NanoBeeDriver/config.yaml) is the single source of truth
+(see [04](04-nanobee-setup.md#44-settings--configyaml)).
 `arm.launch.py` also passes `robot_description`; joint position and velocity limits for
 trajectory goals come from it (without it every goal is rejected).
 
-Flow control: one G-code line at a time, wait for `ok`/`error` (simple send-response protocol).
-Real-time characters (`?`, `!`, `0x18`, `0x85`) bypass the queue. Lines queued before a STOP
-are dropped, never sent later. The bridge runs a multi-threaded executor: trajectory
-execution waits in its own callback while serial reading, status and STOP keep running.
+Flow control: one command line at a time, wait for `ok`/`err <reason>` (`command_timeout`).
+Status requests (`?`) and the instant halt (`!`) are written directly; lines starting with `# `
+are asynchronous board messages (`# homed 0`, `# err home 0: ...`, `# warn ...`,
+`# NanoBee ready` after a board restart, which disarms execution and re-reads the settings).
+The bridge runs a multi-threaded executor: trajectory execution waits in its own callback
+while serial reading, status and STOP keep running.
 
 ### Trajectory execution on hardware
 
-> Implemented and tested only offline against a fake FluidNC (unit tests); **not yet run on
+> Implemented and tested only offline against a fake NanoBee (unit tests); **not yet run on
 > the physical arm.** First runs: reduced speed (panel plans at 10 %), area clear, power
 > cut-off in reach — software STOP is not an emergency stop (see [08](08-safety.md)).
 
 * **Acceptance.** One goal at a time (a second is rejected). The goal then aborts with
   `INVALID_GOAL`/`INVALID_JOINTS` without motion unless: execution is armed; the connection is
-  up; joint limits are known; no homing, jog (active or freshly requested) or queued command;
-  a fresh status report (within `status_timeout`) says `Idle` with a position. The trajectory
-  must name exactly joint1…joint5 (any order, no duplicates), have ≥ 1 point, finite
-  positions within URDF limits, `time_from_start` finite and strictly increasing, a point at
-  t = 0 within `trajectory_start_tolerance` of the measured position, per-joint speed ≤ URDF
-  velocity × 1.05 and vector feed ≤ `max_feed`. Too fast segments are **rejected, not
-  clamped**, so timing never silently deviates.
+  up; joint limits are known; no homing, jog (active or freshly requested) or streaming
+  `joint_trajectory`; a fresh status report (within `status_timeout`) says `Idle` with an empty
+  queue. The trajectory must name exactly joint1…joint5 (any order, no duplicates), have ≥ 1
+  point, finite positions within URDF limits, `time_from_start` finite and strictly increasing,
+  a point at t = 0 within `trajectory_start_tolerance` of the measured position, per-joint speed
+  ≤ URDF velocity × 1.05 and ≤ the board's `joints.max_speed`, segments ≤ 60 s, and — for joints
+  that are referenced while `soft_limits` is on — targets inside the board's `min_deg`/`max_deg`.
+  Too fast or out-of-range goals are **rejected, not clamped**, so timing never silently deviates.
 * **Unsupported (rejected):** `multi_dof_trajectory`, `path_tolerance`, component tolerances,
   efforts, a `header.stamp` more than 0.5 s in the future. Velocities/accelerations are only
-  checked for size/finiteness (FluidNC plans its own acceleration). Honoured: `goal_tolerance`
+  checked for size/finiteness (each segment runs at constant speed). Honoured: `goal_tolerance`
   positions (> 0, else `trajectory_goal_tolerance`), `goal_time_tolerance` (> 0 replaces the
   default time allowance).
-* **Execution.** Radians → degrees only here. `G21 G90 G94`, then one absolute `G1` per point
-  with feed = segment length / segment duration (a segment without motion becomes `G4`).
-* **Feedback** at `status_rate`: desired (linear interpolation of the points), actual (WPos)
-  and error.
-* **Completion.** `ok` only means "queued". Success requires every line acknowledged, two
-  later status reports, FluidNC `Idle` and every joint within its goal tolerance of the last
-  point. A final position mismatch aborts with `GOAL_TOLERANCE_VIOLATED` and disarms.
-* **Failure** (abort, then STOP sequence and disarm): rejected/unacknowledged line, connection
-  lost, stale status, any state other than `Run`/`Idle` (Alarm, Hold, Door…), or no finish
-  within `duration × trajectory_time_scaling + trajectory_time_margin` (defaults × 1.5 + 2 s).
+* **Execution.** Radians → steps only here (board `steps_per_deg`). Each trajectory point
+  becomes one `T p0..p4 dt_ms` segment (absolute steps, `dt` from `time_from_start`); with
+  `motion.blend` the board runs them back to back without stopping. A final deceleration ramp
+  at the joints' `max_accel` is appended so the arm stops on the last point instead of
+  overshooting (ends at most `max_speed / (2 × max_accel)` late). The bridge keeps the board's
+  32-entry queue topped up; `err full` just means "retry later". If `motion.blend` is off the
+  bridge warns at startup: the arm then stops at every point.
+* **Feedback** at `status_rate`: desired (linear interpolation of the points), actual (board
+  position) and error.
+* **Completion.** `ok` only means "queued". Success requires every segment accepted, two
+  later status reports, board `Idle` with an empty queue and every joint within its goal
+  tolerance of the last point. A final position mismatch aborts with `GOAL_TOLERANCE_VIOLATED`
+  and disarms.
+* **Failure** (abort, then STOP and disarm): refused segment, the board's queue ran dry before
+  all segments were sent (`# warn ...`, serial link too slow), connection lost, stale status,
+  any state other than `Run`/`Idle`, motors disabled, or no finish within
+  `duration × trajectory_time_scaling + trajectory_time_margin` (defaults × 1.5 + 2 s).
   MoveIt's own duration monitoring (`moveit_controllers.yaml`: × 1.5 + 1 s) normally fires
-  first: a too-slow trajectory then ends as a MoveIt **cancel** (goal canceled, STOP sequence,
+  first: a too-slow trajectory then ends as a MoveIt **cancel** (goal canceled, STOP,
   execution disarmed) rather than a bridge timeout abort.
-* **Cancel / STOP.** Cancel or `~/stop` (also during jog / go-to) → jog cancel + feed hold,
-  queued lines dropped, then soft reset (`0x18`) only after FluidNC confirms the stop: two
-  consecutive status reports received *after* the hold show `Hold:0`/`Idle` (or any report
-  shows `Alarm`); the bridge polls `?` meanwhile. The cached state is not trusted, because
-  right after streaming starts it may still show the pre-motion `Idle`. If no confirmation
-  arrives within 5 s (e.g. status lost) the reset is sent anyway — this can abort motion
-  (FluidNC Alarm, position lost); it is logged and published on `~/trajectory_status`, and the
-  position must be verified or re-homed before re-arming. The goal ends canceled (cancel) or
-  aborted (`~/stop`). Execution stays **disarmed** until the operator presses
-  **Unlock / re-arm** (`~/unlock`); the bridge starts armed.
-  Until the reset is sent every motion source is refused (`joint_command`, `joint_trajectory`,
-  jog, `~/home`, `~/home_<joint>`, `~/unlock`, trajectory goals) and no queued line is written.
-  STOP drops the current jog velocity: jog stays inhibited until a zero-velocity jog message
-  (gamepad release) or a pause of at least `jog_timeout` in jog messages, so a stick or button
-  held through STOP does not restart motion. The same latch applies to a non-zero jog received
-  while a trajectory goal is active or homing runs (refused messages still count as the jog
-  stream), so a stick held through a goal cancel/fault does not jog afterwards.
+* **Cancel / STOP.** Cancel or `~/stop` (also during jog / go-to / homing) → `S`: the board
+  decelerates to a stop, drops its queue and cancels homing; the bridge stops
+  sending segments. If `S` is not acknowledged, `!` (instant halt, no deceleration – steps may be
+  lost) is sent. The goal ends canceled (cancel) or aborted (`~/stop`). Execution stays
+  **disarmed** until the operator presses **Unlock / re-arm** (`~/unlock`); the bridge starts
+  armed. STOP drops the current jog velocity: jog stays inhibited until a zero-velocity jog
+  message (gamepad release) or a pause of at least `jog_timeout` in jog messages, so a stick or
+  button held through STOP does not restart motion. The same latch applies to a non-zero jog
+  received while a trajectory goal is active or homing runs (refused messages still count as the
+  jog stream), so a stick held through a goal cancel/fault does not jog afterwards.
   Jog/go-to/homing need no Unlock afterwards.
-* **Limits.** Send-response streaming and FluidNC acceleration make timing approximate;
-  intermediate positions are not checked against a path tolerance. The simulator's STOP
-  does not latch/disarm.
+* **Limits.** Open loop: the board reports commanded steps; intermediate positions are not
+  checked against a path tolerance. The simulator's STOP does not latch/disarm.
 
 ### Examples
 
@@ -113,18 +121,20 @@ execution waits in its own callback while serial reading, status and STOP keep r
 ros2 launch arm_start arm.launch.py use_hardware:=true
 
 # ...or run just the bridge against the board:
-ros2 run arm_fluidnc_bridge fluidnc_bridge \
+ros2 run arm_nanobee_bridge nanobee_bridge \
   --ros-args -p serial_port:=/dev/ttyUSB0 -p baud:=115200
 
 # Read realtime status from the board:
 ros2 topic list
 ros2 topic echo /joint_states
-ros2 topic echo /fluidnc_bridge/machine_state
-ros2 topic echo /fluidnc_bridge/feed_rate
-ros2 topic echo /fluidnc_bridge/limit_switches
+ros2 topic echo /nanobee_bridge/machine_state
+ros2 topic echo /nanobee_bridge/limit_switches
 
-ros2 service call /fluidnc_bridge/unlock std_srvs/srv/Trigger
-ros2 service call /fluidnc_bridge/home std_srvs/srv/Trigger
+ros2 service call /nanobee_bridge/unlock std_srvs/srv/Trigger
+ros2 service call /nanobee_bridge/home std_srvs/srv/Trigger
+ros2 service call /nanobee_bridge/set_zero std_srvs/srv/Trigger
+ros2 service call /nanobee_bridge/motors std_srvs/srv/SetBool "{data: false}"
+ros2 service call /nanobee_bridge/reload_settings std_srvs/srv/Trigger
 
 # Single move (radians)
 ros2 topic pub --once /joint_command sensor_msgs/msg/JointState \
@@ -138,31 +148,33 @@ ros2 topic pub --once /joint_trajectory trajectory_msgs/msg/JointTrajectory "{
     {positions: [0.0,  0.0], time_from_start: {sec: 4}}
   ]}"
 
-ros2 service call /fluidnc_bridge/stop std_srvs/srv/Trigger
+ros2 service call /nanobee_bridge/stop std_srvs/srv/Trigger
 ```
 
 ### Endstop homing (one switch per joint, hit from both sides)
 
 ```bash
-ros2 service call /fluidnc_bridge/home_joint1 std_srvs/srv/Trigger   # or "Home" on the web page
-ros2 topic echo /fluidnc_bridge/homing_status
+ros2 service call /nanobee_bridge/home_joint1 std_srvs/srv/Trigger   # or "Home" on the web page
+ros2 topic echo /nanobee_bridge/homing_status
 ```
 
-The switch pin must be in the FluidNC config (`limit_all_pin` of that axis) and the joint's pin letter
-set in `homing_pins`. Joint 1 uses X_STOP (`gpio.33`), connector pins **S G 5V** (left to right):
-wire the switch's C + NC legs to **S + G** (5V unused). Normally-closed reads low when released, so the
-pin is active-high (`gpio.33`); a broken wire then reads as pressed (fail-safe). If you wire C + NO
-instead, use `gpio.33:low`. Pin changes need a config upload + restart:
-`python3 tools/fluidnc_upload_config.py firmware/fluidnc/config.xyzab.yaml --restart` (stop ROS first).
-Check the switch on the web page: the "Endstops" card shows a red **PRESSED** lamp only while it is pressed
-(`home_pins` param of `web_viewer`, default `['X']`, pairs with `home_joints`).
+Homing is configured on the board (`joints.homing`, `homing_dir`, `home_offset_deg`,
+`homing.*` in [config.yaml](../NanoBee/NanoBeeDriver/config.yaml)); joint1 uses `center`.
+Endstop pins are fixed in [NanoBee/src/config.h](../NanoBee/src/config.h): joint1 uses X-MIN
+(GPIO 33), connector pins **S G 5V** (left to right): wire the switch's C + NC legs to **S + G**
+(5V unused). Normally-closed reads low when released, so the pin is active-high
+(`endstops.active_low: false`); a broken wire then reads as pressed (fail-safe). If you wire C + NO
+instead, set `endstops.active_low: true`, push the config (see [04](04-nanobee-setup.md)) and call
+`~/reload_settings`. Check the switch on the web page: the "Endstops" card shows a red **PRESSED**
+lamp only while it is pressed (joints listed in the `home_joints` param of `web_viewer`,
+default `['joint1']`).
 
 ## 6.3 Web page and gamepad
 
 `ros2 launch arm_start arm.launch.py use_hardware:=true`, then open
 http://localhost:8080 (from Windows too).
 
-- STOP / Unlock / re-arm, hold − / + to jog a joint, one shared "Target" column for planning or direct movement; **Joint units** selects degrees (default) or radians for joint positions, targets, gauges and jog speed, "Home" for `homing_joints`. On hardware the Bridge card also shows the latched trajectory execution status (armed / executing / result / disarmed); **Unlock / re-arm** clears a FluidNC alarm and re-arms plan execution after STOP or a fault.
+- STOP / Unlock / re-arm, hold − / + to jog a joint, one shared "Target" column for planning or direct movement; **Joint units** selects degrees (default) or radians for joint positions, targets, gauges and jog speed, "Home" for `home_joints`. On hardware the Bridge card also shows the latched trajectory execution status (armed / executing / result / disarmed); **Unlock / re-arm** enables the motors and re-arms plan execution after STOP or a fault.
 - Changing joint units preserves physical targets, jog speed and an unchanged ready plan. TCP angles remain in degrees; the HTTP API still uses degrees and degrees/s.
 - "Position gauge" bar per joint: −180° … 0 … +180° (−π … 0 … +π rad), the dot shows the current position (red and pinned to the end if outside).
 - TCP position: the panel reads the `world` → `tool0` transform from TF and displays
@@ -225,7 +237,7 @@ The panel reports missing/stale joint states, out-of-limit goals, collisions, an
 planning failures. Planning itself does not move the arm. **Execute plan**
 passes the stored trajectory to MoveIt's `/execute_trajectory` action. MoveIt
 uses the `/arm_controller/follow_joint_trajectory` action — served by the simulator,
-or by the FluidNC bridge with `use_hardware:=true` — to follow
+or by the NanoBee bridge with `use_hardware:=true` — to follow
 its timed points and reports completion or failure to the panel. A plan can be
 executed once within 120 seconds; execution is rejected if the current joints
 have moved from the plan's start. STOP cancels the action and stops the controller.
@@ -253,13 +265,14 @@ goals until **Unlock / re-arm**. Cartesian/TCP goal planning is not configured y
 To connect MoveIt to the real arm cleanly, implement `arm_hardware` (C++):
 
 * Class derived from `hardware_interface::SystemInterface`.
-* `on_init`: read params (port/host, axis letters) from the `<ros2_control>` URDF tag.
-* `on_activate`: open connection, `$X`, `G90`, optionally `$H`.
-* `read()`: parse latest `<...|MPos:...>` (requested with `?` from a background thread) → state interfaces `position`.
-* `write()`: when the command differs from the last sent target by more than a threshold,
-  send `G1` with a feed rate matching the controller's update period; or stream with
-  FluidNC's jog command `$J=` which can be cancelled instantly (`0x85`) – suits
-  `joint_trajectory_controller` streaming.
+* `on_init`: read params (serial port, joint order) from the `<ros2_control>` URDF tag.
+* `on_activate`: open the serial port, check `VER`, read `SETTINGS?` (steps per degree), `E 1`,
+  optionally `H`.
+* `read()`: parse the latest `<... P:p0,..,p4 ...>` (requested with `?` from a background thread)
+  → steps / `steps_per_deg` → state interfaces `position`.
+* `write()`: stream the controller's commands as timed `T` segments (one per update period,
+  blended by `motion.blend`), or as `J` velocity jogs that stop by themselves when commands
+  cease (`jog_timeout_ms`); `S` / `!` to stop – suits `joint_trajectory_controller` streaming.
 * Controllers: `joint_state_broadcaster` + `joint_trajectory_controller`.
 * Then MoveIt's `moveit_simple_controller_manager` points at
   `joint_trajectory_controller/follow_joint_trajectory`.
@@ -274,7 +287,7 @@ node accepts `/joint_command`, `/jog`, and the
 `/arm_controller/follow_joint_trajectory` action; it publishes `/joint_states`.
 The panel's direct movement, hold-to-jog, gamepad, Execute, and STOP
 controls work without the board; RViz shows the same positions. The simulation has no
-endstops or physical dynamics. `use_hardware:=true` selects the FluidNC bridge instead;
+endstops or physical dynamics. `use_hardware:=true` selects the NanoBee bridge instead;
 it serves the same action name, so MoveIt's controller configuration is shared.
 
 The default model is `arm_concept.urdf.xacro`, which uses the meshes exported from
@@ -286,7 +299,9 @@ plugins to the xacro. That requires realistic inertias (see [05](05-mechanical-d
 
 ## 6.7 Coding conventions
 
-* ROS units: radians, meters, seconds. FluidNC units: degrees. Convert only in the bridge.
+* ROS units: radians, meters, seconds. NanoBee units: motor steps (`steps_per_deg` from the
+  board). Convert only in the bridge.
 * Keep protocol logic free of ROS imports (testable with plain `pytest`).
 * `colcon build --symlink-install` + `colcon test` before each commit.
-* One source of truth for joint limits: URDF ≥ FluidNC soft limits (FluidNC is the last guard).
+* One source of truth per limit: URDF for planning; the board's config.yaml for steps, speeds
+  and soft limits (NanoBee is the last guard; the bridge rejects goals that violate either).

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 NUM_JOINTS = 5
-_STATUS_RE = re.compile(r"<(\w+) P:([-\d,]+) Q:(\d+) E:(\d) L:(\d*)>")
+_STATUS_RE = re.compile(r"<(\w+) P:([-\d,]+) Q:(\d+)(?: F:(\d+))? E:(\d) L:(\d*)(?: H:([01]+))?>")
 _SPD_RE = re.compile(r"^\s*steps_per_deg\s*:\s*\[([^\]]*)\]", re.MULTILINE)
 
 
@@ -37,6 +37,8 @@ class Status:
     queued: int
     enabled: bool
     endstops: str  # e.g. "010" for J0..J2, "1" = triggered
+    free: int = 0  # free slots in the move queue
+    referenced: str = ""  # per joint "1" = homed / zeroed (soft limits active)
 
     @property
     def idle(self):
@@ -66,11 +68,14 @@ class _Http:
 
     def status_line(self):
         lines = self._request("/status").splitlines()
-        self.events += [l for l in lines[1:] if l]
+        self.events += [l.lstrip("#").strip() for l in lines[1:] if l]
         return lines[0] if lines else ""
 
     def pull_config(self):
         return self._request("/config")
+
+    def pull_settings(self):
+        return self._request("/settings")
 
     def push_config(self, yaml):
         return self._request("/config", data=yaml.encode())
@@ -83,8 +88,8 @@ class _Http:
 
 
 class _Serial:
-    # board messages that are not replies to the last command
-    _ASYNC = ("homed ", "err home ", "err config.yaml", "err LittleFS", "NanoBee ready", "WiFi")
+    # board messages that are not replies to the last command start with "# "
+    _ASYNC = "#"
 
     def __init__(self, port, baud, timeout, events):
         try:
@@ -129,23 +134,29 @@ class _Serial:
             if not line:
                 continue
             if line.startswith(self._ASYNC):
-                self.events.append(line)
+                self.events.append(line[1:].strip())
             else:
                 return line
 
     def command(self, line):
+        if line.strip() == "!":  # real-time halt: the board answers asynchronously ("# halted")
+            self.s.write(b"!")
+            return "ok"
         self.s.write((line + "\n").encode())
         return self._reply()
 
     def status_line(self):
         return self.command("?")
 
-    def pull_config(self):
-        self.s.write(b"CONFIG?\n")
+    def pull_config(self, request=b"CONFIG?\n"):
+        self.s.write(request)
         lines = []
         while (line := self._readline()) != "END":
             lines.append(line)
         return "\n".join(lines) + "\n"
+
+    def pull_settings(self):
+        return self.pull_config(b"SETTINGS?\n")
 
     def push_config(self, yaml):
         self.s.write(b"CONFIG\n" + yaml.replace("\r", "").encode() + b"\nEND\n")
@@ -172,7 +183,7 @@ class NanoBee:
             self._io = _Serial(port, baud, timeout, self.events)
         else:
             self._io = _Http(host or "192.168.4.1", timeout, self.events)
-        yaml = self.config_path.read_text() if self.config_path else self.pull_config()
+        yaml = self.config_path.read_text() if self.config_path else self.pull_settings()
         self.steps_per_deg = self._parse_spd(yaml)
 
     def close(self):
@@ -204,7 +215,12 @@ class NanoBee:
         return spd
 
     def pull_config(self):
+        """config.yaml as stored on the board."""
         return self._io.pull_config()
+
+    def pull_settings(self):
+        """Settings in use (every key, defaults filled in)."""
+        return self._io.pull_settings()
 
     def push_config(self, path=None):
         """Upload YAML to the board; applied at once (machine must be idle). Wi-Fi changes need reboot()."""
@@ -233,8 +249,10 @@ class NanoBee:
             angles=[s / k for s, k in zip(steps, self.steps_per_deg)],
             steps=steps,
             queued=int(m.group(3)),
-            enabled=m.group(4) == "1",
-            endstops=m.group(5),
+            free=int(m.group(4) or 0),
+            enabled=m.group(5) == "1",
+            endstops=m.group(6),
+            referenced=m.group(7) or "",
         )
 
     def angles(self):
@@ -320,12 +338,20 @@ class NanoBee:
         self.command("!")
         self._target = None
 
-    def home(self, joint, wait=True):
-        """Home joint 0..2 on its endstop; position becomes 0 there."""
-        self.command(f"H {joint}")
+    def home(self, joint=None, wait=True):
+        """Home one joint, or every joint with joints.homing != none (joint=None).
+        The home reference becomes joints.home_offset_deg."""
+        self.command("H" if joint is None else f"H {joint}")
         self._target = None
         if wait:
             self.wait()
+
+    def segment(self, angles, dt):
+        """Queue a timed segment: reach `angles` (deg, list of 5) in `dt` seconds at constant speed.
+        Back-to-back segments blend without stopping when motion.blend is on."""
+        steps = [round(a * k) for a, k in zip(angles, self.steps_per_deg)]
+        self.command("T " + " ".join(map(str, steps)) + f" {dt * 1000:.1f}")
+        self._target = steps
 
     def zero(self, angles=None):
         """Declare the current position as `angles` (default all 0 deg)."""

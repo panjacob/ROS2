@@ -3,7 +3,7 @@
 <package format="3">
   <name>arm_web</name>
   <version>0.1.0</version>
-  <description>Web page showing live arm state and controlling the FluidNC bridge (jog, go-to, homing, gamepad).</description>
+  <description>Web page showing live arm state and controlling the NanoBee bridge (jog, go-to, homing, gamepad).</description>
   <maintainer email="you@example.com">TODO</maintainer>
   <license>MIT</license>
 

@@ -17,7 +17,7 @@ Write these down before designing – every other decision depends on them:
 Study before reinventing (check each project's license before reusing parts):
 
 * **BCN3D Moveo** – 5-DOF, NEMA17, belts; classic stepper arm.
-* **Thor (AngelLM)** – 6-DOF, printed, GRBL-based – very close to this setup.
+* **Thor (AngelLM)** – 6-DOF, printed, stepper-driven – very close to this setup.
 * **PAROL6** – 6-DOF desktop arm with printed parts and steppers.
 * **AR4 (Annin Robotics)** – stepper arm with encoders, extensive docs.
 
@@ -34,8 +34,10 @@ and $SF \approx 2$ safety factor. Example: 0.3 kg payload at 0.4 m plus ~0.8 kg 
 an average 0.2 m → $\tau \approx 9.81(0.12 + 0.16) \cdot 2 \approx 5.5\,\text{Nm}$.
 
 A NEMA17 gives ~0.4 Nm usable (less at speed), so the shoulder needs **≥ 15:1–20:1**
-reduction. That is why the default `config.yaml` uses 20:1 (shoulder), 15:1 (elbow),
-5:1 (base, wrist). Update the ratios there once your design is fixed.
+reduction. Planned ratios: 20:1 (shoulder), 15:1 (elbow), 5:1 (base, wrist). Once your design is
+fixed, enter them in `joints.steps_per_deg` of
+[NanoBee/NanoBeeDriver/config.yaml](../NanoBee/NanoBeeDriver/config.yaml)
+(motor steps × microsteps × gear ratio / 360; currently 17.7778 for every joint).
 
 Also: use **counterbalancing** (spring or counterweight at the shoulder) – it lowers the
 required torque and makes power loss less dramatic.
@@ -68,8 +70,8 @@ Recommended start: **belts for base & wrist, cycloidal or 2-stage planetary for 
 
 1. Model in Fusion 360 / Onshape / FreeCAD. Use **one body per link** and put each link's
    origin **on its joint axis**.
-2. Define a "zero pose" (arm straight up is convenient) – this must equal FluidNC 0° on all
-   axes and URDF joint value 0.
+2. Define a "zero pose" (arm straight up is convenient) – this must equal NanoBee 0° on all
+   joints (after homing / zeroing) and URDF joint value 0.
 3. Export tools:
    * Onshape → `onshape-to-robot`
    * Fusion 360 → `fusion2urdf` (community add-in)

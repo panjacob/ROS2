@@ -21,6 +21,7 @@ textarea{width:100%;height:320px;background:#111;color:#ddd;font-family:monospac
 <button class="g" onclick="cmd('S')">Smooth stop</button>
 <button onclick="cmd('E 1')">Enable</button>
 <button class="g" onclick="cmd('E 0')">Disable</button>
+<button class="g" onclick="cmd('H')">Home all</button>
 <div id="st">connecting...</div>
 </section>
 
