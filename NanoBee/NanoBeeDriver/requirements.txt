@@ -1,0 +1,1 @@
+pyserial>=3.5  # USB connection; Wi-Fi mode needs only the standard library

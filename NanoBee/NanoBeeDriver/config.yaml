@@ -1,0 +1,25 @@
+# NanoBee settings. Firmware units: steps, steps/s, steps/s^2. Lists are per joint J0..J4.
+# Push with:  NanoBee(host).push_config("config.yaml")   or the web page -> Settings -> Save
+wifi:
+  mode: ap              # ap = board makes its own network, sta = join existing network
+  ssid: "NanoBee"
+  password: "nanobee123" # >= 8 chars, or "" for open AP
+  hostname: nanobee     # http://nanobee.local/
+motion:
+  default_speed: 1000
+  default_accel: 2000
+  min_speed: 100        # start/stop speed
+  jog_timeout_ms: 500   # jog stops if no J command arrives in time, 0 = off
+joints:
+  steps_per_deg: [8.8889, 8.8889, 8.8889, 8.8889, 8.8889]  # motor steps * microsteps * gear ratio / 360
+  max_speed: [5000, 5000, 5000, 5000, 5000]
+  max_accel: [10000, 10000, 10000, 10000, 10000]
+  dir_invert: [false, false, false, false, false]
+  homing_dir: [-1, -1, -1, -1, -1]
+homing:
+  speed: 500
+  accel: 2000
+  backoff: 200
+  max_travel: 200000
+endstops:
+  active_low: true
