@@ -35,7 +35,7 @@ an average 0.2 m → $\tau \approx 9.81(0.12 + 0.16) \cdot 2 \approx 5.5\,\text{
 
 A NEMA17 gives ~0.4 Nm usable (less at speed), so the shoulder needs **≥ 15:1–20:1**
 reduction. Planned ratios: 20:1 (shoulder), 15:1 (elbow), 5:1 (base, wrist). Once your design is
-fixed, enter them in `joints.steps_per_deg` of
+fixed, enter them in `joints.jointN.steps_per_deg` of
 [NanoBee/NanoBeeDriver/config.yaml](../NanoBee/NanoBeeDriver/config.yaml)
 (motor steps × microsteps × gear ratio / 360; currently 17.7778 for every joint).
 

@@ -38,7 +38,7 @@ only what a stepper-based arm needs at the low level:
 * homing (`none` / `edge` / `center` per joint), soft limits per joint,
 * a USB serial line protocol (used by ROS) and a Wi-Fi web page for setup and testing.
 
-Firmware positions are **motor steps** per joint; `joints.steps_per_deg` in the board's
+Firmware positions are **motor steps** per joint; `joints.jointN.steps_per_deg` in the board's
 `config.yaml` converts them (`T 533 0 0 0 0 1000` = base to 30° in 1 s at 17.7778 steps/deg).
 NanoBee knows nothing about arm kinematics – ROS 2 does all of that (URDF, IK, planning).
 

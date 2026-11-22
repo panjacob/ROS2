@@ -6,8 +6,14 @@ namespace Motion {
 
 void begin();
 
-void setEnabled(bool on);
-bool enabled();
+void setEnabled(bool on);  // arm/disarm all drivers; enabling re-powers joints switched off by powerOff
+bool enabled();            // armed (E 1), even if some joints are powered off while idle
+uint32_t enabledAtMs();    // millis() of the last setEnabled(true)
+
+// Switches off the driver of a joint while the whole machine is at rest (keeps position).
+// Any later move/jog re-powers all joints. Returns false if anything is moving or queued.
+bool powerOff(int j);
+bool powered(int j);
 
 // Synchronized absolute move in steps; speed/accel apply to the joint with the longest travel.
 void moveTo(const int32_t target[NUM_JOINTS], float speed, float accel);

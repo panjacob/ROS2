@@ -35,7 +35,7 @@ Source: [nanobee_bridge.py](../src/arm_nanobee_bridge/arm_nanobee_bridge/nanobee
 | `jog` (sub) | `sensor_msgs/JointState` | Velocity jog: `velocity` [rad/s] per named joint (others 0), sent as `J` at `jog_rate`, clamped to `max_jog_speed` and the board's `max_speed`. Must be re-sent within `jog_timeout`; zero/stale → jog stops. Ignored while a trajectory goal is active |
 | `/arm_controller/follow_joint_trajectory` (action) | `control_msgs/FollowJointTrajectory` | MoveIt execution on the real arm, see [Trajectory execution](#trajectory-execution-on-hardware) |
 | `~/trajectory_status` (pub, latched) | `std_msgs/String` | Armed / executing / result / disarm reason of trajectory execution |
-| `~/home` (srv) | `std_srvs/Trigger` | `H`: home every joint with `joints.homing` ≠ `none` (board must be `Idle`; refused while jogging, streaming or a trajectory goal is active) |
+| `~/home` (srv) | `std_srvs/Trigger` | `H`: home every joint with `joints.jointN.homing` ≠ `none` (board must be `Idle`; refused while jogging, streaming or a trajectory goal is active) |
 | `~/home_<joint>` (srv) | `std_srvs/Trigger` | `H j`: home one joint; only created for joints with a homing mode (joint1, `center`: switch found from both sides, the middle becomes `home_offset_deg`) |
 | `~/homing_status` (pub, latched) | `std_msgs/String` | Homing progress / result text |
 | `~/stop` (srv) | `std_srvs/Trigger` | `S`: decelerate to a stop, drop queued motion, cancel homing; aborts the trajectory goal and jog. If `S` is not acknowledged the instant halt `!` is sent. Disarms trajectory execution until `~/unlock` |
@@ -73,7 +73,7 @@ while serial reading, status and STOP keep running.
   queue. The trajectory must name exactly joint1…joint5 (any order, no duplicates), have ≥ 1
   point, finite positions within URDF limits, `time_from_start` finite and strictly increasing,
   a point at t = 0 within `trajectory_start_tolerance` of the measured position, per-joint speed
-  ≤ URDF velocity × 1.05 and ≤ the board's `joints.max_speed`, segments ≤ 60 s, and — for joints
+  ≤ URDF velocity × 1.05 and ≤ the board's `joints.jointN.max_speed`, segments ≤ 60 s, and — for joints
   that are referenced while `soft_limits` is on — targets inside the board's `min_deg`/`max_deg`.
   Too fast or out-of-range goals are **rejected, not clamped**, so timing never silently deviates.
 * **Unsupported (rejected):** `multi_dof_trajectory`, `path_tolerance`, component tolerances,
@@ -158,7 +158,7 @@ ros2 service call /nanobee_bridge/home_joint1 std_srvs/srv/Trigger   # or "Home"
 ros2 topic echo /nanobee_bridge/homing_status
 ```
 
-Homing is configured on the board (`joints.homing`, `homing_dir`, `home_offset_deg`,
+Homing is configured on the board (`joints.jointN.homing`, `homing_dir`, `home_offset_deg`,
 `homing.*` in [config.yaml](../NanoBee/NanoBeeDriver/config.yaml)); joint1 uses `center`.
 Endstop pins are fixed in [NanoBee/src/config.h](../NanoBee/src/config.h): joint1 uses X-MIN
 (GPIO 33), connector pins **S G 5V** (left to right): wire the switch's C + NC legs to **S + G**

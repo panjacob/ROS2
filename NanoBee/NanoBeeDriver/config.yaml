@@ -1,5 +1,5 @@
-# NanoBee settings for the 5-joint arm. Firmware units: steps, steps/s, steps/s^2. Lists are per joint J0..J4
-# (J0 = joint1 on X socket ... J4 = joint5 on E1 socket). 200 steps x 32 microsteps / 360 deg, direct drive.
+# NanoBee settings for the 5-joint arm. Firmware units: steps, steps/s, steps/s^2.
+# One block per joint: joint1 = X socket ... joint5 = E1 socket. 200 steps x 32 microsteps / 360 deg, direct drive.
 # Push with:  NanoBee(port="COM6").push_config("config.yaml")   or the web page -> Settings -> Save.
 # The ROS bridge (arm_nanobee_bridge) reads these values from the board at startup ("SETTINGS?").
 wifi:
@@ -13,17 +13,74 @@ motion:
   min_speed: 100        # start/stop speed
   jog_timeout_ms: 500   # jog stops if no J command arrives in time, 0 = off
   blend: true           # T segments (ROS trajectories) run back to back without stopping
+  idle_timeout_ms: 5000 # joints with idle_disable switch off after this long at rest, 0 = never
 joints:
-  steps_per_deg: [17.7778, 17.7778, 17.7778, 17.7778, 17.7778]  # motor steps * microsteps * gear ratio / 360
-  max_speed: [6400, 6400, 6400, 6400, 6400]      # 360 deg/s
-  max_accel: [53333, 53333, 53333, 53333, 53333] # 3000 deg/s^2
-  dir_invert: [true, false, false, false, false]
-  homing_dir: [-1, -1, -1, -1, -1]       # direction of the first approach to the switch
-  homing: [center, none, none, none, none]  # none | edge | center (edge/center need an endstop: J0..J2)
-  home_offset_deg: [0, 0, 0, 0, 0]       # angle assigned to the home reference (switch / switch middle)
-  soft_limits: true                      # active per joint once it is homed or set with Z
-  min_deg: [-175, -95, -140, -105, -185] # URDF limits + 5 deg
-  max_deg: [175, 95, 140, 105, 185]
+  soft_limits: true       # min_deg/max_deg active per joint once it is homed or set with Z
+  # Per joint:
+  #   steps_per_deg   motor steps * microsteps * gear ratio / 360
+  #   max_speed       steps/s (6400 = 360 deg/s), max_accel steps/s^2 (53333 = 3000 deg/s^2)
+  #   dir_invert      flip the direction
+  #   idle_disable    driver off after motion.idle_timeout_ms at rest (cooler, saves power); only for
+  #                   joints that hold their pose unpowered - a pushed joint loses its position
+  #   homing          none | edge | center (edge/center need an endstop: joint1..joint3)
+  #   homing_dir      direction of the first approach to the switch (-1 / 1)
+  #   home_offset_deg angle assigned to the home reference (switch / switch middle)
+  #   min_deg/max_deg soft limits (URDF limits + 5 deg)
+  joint1:                # base yaw
+    steps_per_deg: 17.7778
+    max_speed: 6400
+    max_accel: 53333
+    dir_invert: true
+    idle_disable: true
+    homing: center
+    homing_dir: -1
+    home_offset_deg: 0
+    min_deg: -175
+    max_deg: 175
+  joint2:                # shoulder
+    steps_per_deg: 17.7778
+    max_speed: 6400
+    max_accel: 53333
+    dir_invert: false
+    idle_disable: false
+    homing: none
+    homing_dir: -1
+    home_offset_deg: 0
+    min_deg: -95
+    max_deg: 95
+  joint3:                # elbow
+    steps_per_deg: 17.7778
+    max_speed: 6400
+    max_accel: 53333
+    dir_invert: false
+    idle_disable: false
+    homing: none
+    homing_dir: -1
+    home_offset_deg: 0
+    min_deg: -140
+    max_deg: 140
+  joint4:                # wrist pitch
+    steps_per_deg: 17.7778
+    max_speed: 6400
+    max_accel: 53333
+    dir_invert: false
+    idle_disable: false
+    homing: none
+    homing_dir: -1
+    home_offset_deg: 0
+    min_deg: -105
+    max_deg: 105
+  joint5:                # wrist roll
+    steps_per_deg: 17.7778
+    max_speed: 6400
+    max_accel: 53333
+    dir_invert: false
+    idle_disable: true
+    homing: none
+    homing_dir: -1
+    home_offset_deg: 0
+    min_deg: -185
+    max_deg: 185
 homing:
   enabled: true
   speed: 1600           # 90 deg/s seek; slow touch runs at speed / 5

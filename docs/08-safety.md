@@ -6,7 +6,7 @@ Even a small stepper arm with 20:1 gearboxes can pinch fingers, break parts and 
 
 1. **Hardware E-stop** that cuts motor supply (24 V), reachable at all times. Software stop
    (`~/stop`, `!`) is not an E-stop.
-2. First motion of any new config/code: **reduced speed** (low `joints.max_speed` /
+2. First motion of any new config/code: **reduced speed** (low `joints.jointN.max_speed` /
    `motion.default_speed` in NanoBee's `config.yaml`, low `move_speed` / `max_jog_speed` in
    `nanobee_bridge.yaml`), hand on E-stop, nobody in the workspace.
 3. **Home after every power loss, E-stop, board restart, motor disable or crash.** Positions are
@@ -14,13 +14,16 @@ Even a small stepper arm with 20:1 gearboxes can pinch fingers, break parts and 
    trajectory abort or a hit endstop/soft limit always means the position may be lost: verify
    it (or re-home / `~/set_zero`) **before** pressing **Unlock / re-arm**. `~/unlock` only sends
    `E 1` (motors on) and re-arms the bridge; it never homes automatically.
-4. Keep NanoBee soft limits (`joints.soft_limits`, per-joint `min_deg`/`max_deg`) enabled. They
+4. Keep NanoBee soft limits (`joints.soft_limits`, `joints.jointN.min_deg`/`max_deg`) enabled. They
    are enforced only for joints referenced by homing or `Z`; set them slightly inside the
    mechanical range.
 5. The arm may **drop when motors are disabled** (`E 0`, `~/motors` false, board reset, E-stop).
-   NanoBee has no idle timeout (drivers stay enabled after motion; they start disabled at boot
-   and are enabled by the first move/jog/home). Add a counterbalance and support the arm before
-   cutting power.
+   Drivers start disabled at boot and are enabled by the first move/jog/home. Joints listed in
+   `joints.jointN.idle_disable` also switch off by themselves after `motion.idle_timeout_ms` at rest
+   (status `O:` bit `0`) and wake on the next command, keeping their home reference: enable it
+   only for joints that do not sag or get pushed – a back-driven joint silently loses position
+   (re-home it). Gravity-loaded joints (shoulder/elbow) stay powered. Add a counterbalance and
+   support the arm before cutting power.
 6. Never hot-plug motors or drivers. Check driver orientation before powering.
 7. Fuse the 24 V line; secure the PSU mains wiring in a closed enclosure.
 8. Clamp the base to the table – a fast base rotation tips an unclamped arm.

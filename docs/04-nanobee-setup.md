@@ -57,17 +57,34 @@ starting ROS.
 [NanoBee/NanoBeeDriver/config.yaml](../NanoBee/NanoBeeDriver/config.yaml) is the single source of
 truth for the arm's tunables; the ROS bridge reads them from the board at startup (`SETTINGS?`).
 Firmware units are **steps** (`steps/s`, `steps/s²`); degrees × `steps_per_deg` = steps.
+Each joint has its own block under `joints:` (`joint1`..`joint5` = driver slots X, Y, Z, E0, E1):
+
+```yaml
+joints:
+  soft_limits: true
+  joint1:
+    steps_per_deg: 17.7778
+    max_speed: 6400
+    homing: center
+    min_deg: -175
+    max_deg: 175
+    # ...
+```
+
+The older form with one list per key (`steps_per_deg: [a, b, c, d, e]`) is still accepted.
 
 | Key | Current value / meaning |
 |-----|-------------------------|
-| `joints.steps_per_deg` | 17.7778 for every joint (motor steps × microsteps × gear ratio / 360) |
-| `joints.max_speed`, `max_accel` | per joint in steps/s, steps/s² (6400 = 360°/s) |
-| `joints.dir_invert` | flip a joint's direction |
-| `joints.homing` | `none`, `edge` (switch = `home_offset_deg`) or `center` (switch hit from both sides, middle = `home_offset_deg`); joint1 = `center`, the others `none` |
-| `joints.homing_dir`, `home_offset_deg` | direction of the first approach; angle given to the home reference |
-| `joints.soft_limits`, `min_deg`, `max_deg` | range per joint, enforced once the joint is referenced (homed or set with `Z`) |
+| `joints.jointN.steps_per_deg` | 17.7778 for every joint (motor steps × microsteps × gear ratio / 360) |
+| `joints.jointN.max_speed`, `max_accel` | in steps/s, steps/s² (6400 = 360°/s) |
+| `joints.jointN.dir_invert` | flip a joint's direction |
+| `joints.jointN.idle_disable` | `true`: the joint's driver switches off after `motion.idle_timeout_ms` at rest (cooler motors/drivers, less power) and wakes on the next move. Position and home reference are kept, so use it only for joints that hold their pose unpowered (now joint1 + joint5) |
+| `joints.jointN.homing` | `none`, `edge` (switch = `home_offset_deg`) or `center` (switch hit from both sides, middle = `home_offset_deg`); joint1 = `center`, the others `none` |
+| `joints.jointN.homing_dir`, `home_offset_deg` | direction of the first approach; angle given to the home reference |
+| `joints.soft_limits`, `jointN.min_deg`, `jointN.max_deg` | global switch; range per joint, enforced once the joint is referenced (homed or set with `Z`) |
 | `motion.blend` | `true`: timed `T` segments run back to back without stopping (needed for smooth ROS trajectories) |
 | `motion.default_speed`, `default_accel`, `jog_timeout_ms` | `M` defaults, jog watchdog |
+| `motion.idle_timeout_ms` | rest time before `idle_disable` joints switch off (5000; `0` = never) |
 | `homing.enabled`, `speed`, `backoff`, `max_travel` | `false` rejects `H`; homing speeds/distances in steps |
 | `endstops.active_low` | switch polarity (all switches) |
 
@@ -86,7 +103,7 @@ Positions are absolute steps, speeds steps/s.
 
 | Command | Meaning |
 |---------|---------|
-| `?` | Status `<Idle\|Run\|Jog\|Home P:p0,..,p4 Q:queued F:free E:enabled L:endstops H:referenced>` (`L` = J0..J2 switches, `1` = pressed; `H` = joint homed/zeroed) |
+| `?` | Status `<Idle\|Run\|Jog\|Home P:p0,..,p4 Q:queued F:free E:enabled L:endstops H:referenced O:powered>` (`L` = J0..J2 switches, `1` = pressed; `H` = joint homed/zeroed; `O` = driver on, `0` while switched off by `idle_disable`) |
 | `M p0 p1 p2 p3 p4 [speed [accel]]` | Synchronized absolute move (all joints arrive together) |
 | `R d0 .. d4 [speed [accel]]` | Relative move |
 | `T p0 .. p4 dt_ms` | Timed segment (used by ROS trajectories); `err full` = queue full, retry |

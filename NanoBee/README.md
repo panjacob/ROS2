@@ -1,5 +1,10 @@
 usbipd attach --wsl --busid 2-1
 cd ~/ROS2/NanoBee
+pio run -t upload --upload-port /dev/ttyUSB0usbipd attach --wsl --busid 2-1
+
+
+
+cd ~/ROS2/NanoBee
 pio run -t upload --upload-port /dev/ttyUSB0
 
 # NanoBee – build & flash in VS Code
@@ -50,14 +55,16 @@ or from Python: `NanoBee(port="COM6", config="config.yaml").push_config()`.
 Pin wiring is compile-time only, in `src/config.h`. The values the board actually uses (file + defaults)
 are printed by `SETTINGS?` (serial) or `GET /settings`; the ROS bridge reads them from there at startup.
 
-Key settings for the arm:
+Key settings for the arm (joint settings live in per-joint blocks `joints.joint1`..`joint5`; the older
+one-list-per-key form is still accepted):
 
 | Key | Meaning |
 |-----|---------|
 | `motion.blend` | `true`: consecutive `T` segments run back to back without stopping (smooth ROS trajectories) |
-| `joints.homing` | per joint `none`, `edge` (switch = `home_offset_deg`) or `center` (switch hit from both sides, middle = `home_offset_deg`) |
-| `joints.homing_dir` | direction of the first approach to the switch |
-| `joints.soft_limits`, `min_deg`, `max_deg` | moves outside the range are rejected (`err limit`) and jogs stop at the edge, once the joint is homed or set with `Z` |
+| `joints.jointN.idle_disable`, `motion.idle_timeout_ms` | switch the driver off after this long at rest (cooler, less power); wakes on the next move, keeps the home reference (status `O:`) |
+| `joints.jointN.homing` | `none`, `edge` (switch = `home_offset_deg`) or `center` (switch hit from both sides, middle = `home_offset_deg`) |
+| `joints.jointN.homing_dir` | direction of the first approach to the switch |
+| `joints.soft_limits`, `jointN.min_deg`, `jointN.max_deg` | moves outside the range are rejected (`err limit`) and jogs stop at the edge, once the joint is homed or set with `Z` |
 | `homing.enabled` | `false` rejects `H` |
 
 ## 6. Protocol (USB serial 115200 or `GET /cmd?c=...`)
@@ -73,6 +80,6 @@ lines starting with `# ` are asynchronous messages (`# homed 0`, `# err home 0: 
 | `J v0..v4 [accel]` | jog (steps/s), repeat within `jog_timeout_ms` |
 | `S` / `!` | smooth stop / instant halt (both drop the queue) |
 | `E 0\|1`, `Z [p0..p4]`, `H [j]`, `V`, `G us` | drivers, set position, home (all or one), defaults, servo |
-| `?` | `<Idle\|Run\|Jog\|Home P:p0,..,p4 Q:queued F:free E:enabled L:endstops H:referenced>` |
+| `?` | `<Idle\|Run\|Jog\|Home P:p0,..,p4 Q:queued F:free E:enabled L:endstops H:referenced O:powered>` |
 | `VER` | `NanoBee 2 joints=5` |
 | `CONFIG` ... `END`, `CONFIG?`, `SETTINGS?`, `REBOOT` | serial only: upload / dump stored / dump effective settings, reboot |

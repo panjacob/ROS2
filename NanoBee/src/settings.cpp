@@ -36,7 +36,7 @@ static bool toBool(String v, bool& out) {
     return false;
 }
 
-// "[a, b, c]" -> items; requires exactly NUM_JOINTS entries.
+// "[a, b, c]" -> items; requires exactly NUM_JOINTS entries. Only for the old list-per-setting form.
 static bool splitList(const String& v, String items[NUM_JOINTS]) {
     if (!v.startsWith("[") || !v.endsWith("]")) return false;
     String body = v.substring(1, v.length() - 1);
@@ -53,21 +53,61 @@ static bool splitList(const String& v, String items[NUM_JOINTS]) {
     return n == NUM_JOINTS;
 }
 
-static bool floatList(const String& v, float out[NUM_JOINTS], float lo, float hi) {
-    String it[NUM_JOINTS];
-    float  tmp[NUM_JOINTS];
-    if (!splitList(v, it)) return false;
-    for (int j = 0; j < NUM_JOINTS; ++j) {
-        if (!toFloat(it[j], tmp[j], lo, hi)) return false;
+// One setting of joint j (firmware index, config block "joint<j+1>").
+static bool applyJointKey(int j, const String& k, const String& v, Settings& s) {
+    float hz = STEP_TICK_HZ;
+    if (k == "steps_per_deg") return toFloat(v, s.stepsPerDeg[j], 0.001, 1e6);
+    if (k == "max_speed") return toFloat(v, s.maxSpeed[j], 1, hz);
+    if (k == "max_accel") return toFloat(v, s.maxAccel[j], 1, 1e7);
+    if (k == "dir_invert") return toBool(v, s.dirInvert[j]);
+    if (k == "idle_disable") return toBool(v, s.idleDisable[j]);
+    if (k == "homing_dir") {
+        int32_t d;
+        if (!toInt(v, d, -1, 1) || d == 0) return false;
+        s.homingDir[j] = d;
+        return true;
     }
-    memcpy(out, tmp, sizeof(tmp));
-    return true;
+    if (k == "homing") {  // none | edge | center
+        HomingMode m;
+        if (v == "none") m = HOME_NONE;
+        else if (v == "edge") m = HOME_EDGE;
+        else if (v == "center") m = HOME_CENTER;
+        else return false;
+        if (m != HOME_NONE && ENDSTOP_PIN[j] < 0) return false;  // no endstop input on that slot
+        s.homing[j] = m;
+        return true;
+    }
+    if (k == "home_offset_deg") return toFloat(v, s.homeOffsetDeg[j], -100000, 100000);
+    if (k == "min_deg") return toFloat(v, s.minDeg[j], -100000, 100000);
+    if (k == "max_deg") return toFloat(v, s.maxDeg[j], -100000, 100000);
+    return false;
 }
 
 static bool applyKey(const String& k, const String& raw, Settings& s) {
     String v = unquote(raw);
-    String it[NUM_JOINTS];
     float  hz = STEP_TICK_HZ;
+
+    // joints.joint<N>.<key>, N = 1..NUM_JOINTS
+    static const String JOINT_PREFIX = "joints.joint";
+    if (k.startsWith(JOINT_PREFIX)) {
+        int dot = k.indexOf('.', JOINT_PREFIX.length());
+        if (dot < 0) return false;
+        String num = k.substring(JOINT_PREFIX.length(), dot);
+        int    n   = num.toInt();
+        if (num != String(n) || n < 1 || n > NUM_JOINTS) return false;
+        return applyJointKey(n - 1, k.substring(dot + 1), v, s);
+    }
+    // Old form, one list per setting: joints.<key>: [j0, j1, ...]
+    if (k.startsWith("joints.") && v.startsWith("[")) {
+        String   it[NUM_JOINTS];
+        Settings tmp = s;
+        if (!splitList(v, it)) return false;
+        for (int j = 0; j < NUM_JOINTS; ++j) {
+            if (!applyJointKey(j, k.substring(7), unquote(it[j]), tmp)) return false;
+        }
+        s = tmp;
+        return true;
+    }
 
     if (k == "wifi.mode") {
         if (v == "ap") return s.wifiSta = false, true;
@@ -86,48 +126,12 @@ static bool applyKey(const String& k, const String& raw, Settings& s) {
         return toInt(v, t, 0, 60000) && (s.jogTimeoutMs = t, true);
     }
     if (k == "motion.blend") return toBool(v, s.blend);
+    if (k == "motion.idle_timeout_ms") {
+        int32_t t;
+        return toInt(v, t, 0, 3600000) && (s.idleTimeoutMs = t, true);
+    }
 
-    if (k == "joints.steps_per_deg") return floatList(v, s.stepsPerDeg, 0.001, 1e6);
-    if (k == "joints.max_speed") return floatList(v, s.maxSpeed, 1, hz);
-    if (k == "joints.max_accel") return floatList(v, s.maxAccel, 1, 1e7);
-    if (k == "joints.dir_invert") {
-        bool tmp[NUM_JOINTS];
-        if (!splitList(v, it)) return false;
-        for (int j = 0; j < NUM_JOINTS; ++j) {
-            if (!toBool(it[j], tmp[j])) return false;
-        }
-        memcpy(s.dirInvert, tmp, sizeof(tmp));
-        return true;
-    }
-    if (k == "joints.homing_dir") {
-        int8_t tmp[NUM_JOINTS];
-        if (!splitList(v, it)) return false;
-        for (int j = 0; j < NUM_JOINTS; ++j) {
-            int32_t d;
-            if (!toInt(it[j], d, -1, 1) || d == 0) return false;
-            tmp[j] = d;
-        }
-        memcpy(s.homingDir, tmp, sizeof(tmp));
-        return true;
-    }
-    if (k == "joints.homing") {  // none | edge | center per joint
-        HomingMode tmp[NUM_JOINTS];
-        if (!splitList(v, it)) return false;
-        for (int j = 0; j < NUM_JOINTS; ++j) {
-            String m = unquote(it[j]);
-            if (m == "none") tmp[j] = HOME_NONE;
-            else if (m == "edge") tmp[j] = HOME_EDGE;
-            else if (m == "center") tmp[j] = HOME_CENTER;
-            else return false;
-            if (tmp[j] != HOME_NONE && ENDSTOP_PIN[j] < 0) return false;  // no endstop input on that slot
-        }
-        memcpy(s.homing, tmp, sizeof(tmp));
-        return true;
-    }
-    if (k == "joints.home_offset_deg") return floatList(v, s.homeOffsetDeg, -100000, 100000);
     if (k == "joints.soft_limits") return toBool(v, s.softLimits);
-    if (k == "joints.min_deg") return floatList(v, s.minDeg, -100000, 100000);
-    if (k == "joints.max_deg") return floatList(v, s.maxDeg, -100000, 100000);
 
     if (k == "homing.enabled") return toBool(v, s.homingEnabled);
     if (k == "homing.speed") return toFloat(v, s.homingSpeed, 1, hz);
@@ -142,7 +146,10 @@ static bool applyKey(const String& k, const String& raw, Settings& s) {
 
 bool parse(const String& yaml, Settings& out, String& err) {
     Settings s = out;
-    String   section;
+    static constexpr int MAX_DEPTH = 3;  // e.g. joints > joint1 > key
+    String   path[MAX_DEPTH];
+    int      pathIndent[MAX_DEPTH];
+    int      depth  = 0;
     int      lineNo = 0, pos = 0;
 
     while (pos <= (int)yaml.length()) {
@@ -176,33 +183,35 @@ bool parse(const String& yaml, Settings& out, String& err) {
         key.trim();
         val.trim();
 
-        if (indent == 0) {
-            section = val.isEmpty() ? key : "";
-            if (val.isEmpty()) continue;
-        } else if (section.isEmpty()) {
+        while (depth && pathIndent[depth - 1] >= indent) --depth;
+        if (indent > 0 && depth == 0) {
             return err = "line " + String(lineNo) + ": indented key outside a section", false;
         }
-        String full = section.isEmpty() ? key : section + "." + key;
+        String full;
+        for (int i = 0; i < depth; ++i) full += path[i] + ".";
+        full += key;
+        if (val.isEmpty()) {  // opens a section
+            if (depth == MAX_DEPTH) return err = "line " + String(lineNo) + ": nested too deep", false;
+            path[depth]       = key;
+            pathIndent[depth] = indent;
+            ++depth;
+            continue;
+        }
         if (!applyKey(full, val, s)) {
             return err = "line " + String(lineNo) + ": bad or unknown setting '" + full + "'", false;
         }
     }
     for (int j = 0; j < NUM_JOINTS; ++j) {
-        if (s.minDeg[j] >= s.maxDeg[j]) return err = "joint " + String(j) + ": min_deg must be below max_deg", false;
+        if (s.minDeg[j] >= s.maxDeg[j]) return err = "joint" + String(j + 1) + ": min_deg must be below max_deg", false;
     }
     out = s;
     return true;
 }
 
-static String list(const float* v, int decimals = 0) {
-    String r = "[";
-    for (int j = 0; j < NUM_JOINTS; ++j) r += (j ? ", " : "") + String(v[j], decimals);
-    return r + "]";
-}
-
 String toYaml(const Settings& s) {
+    static const char* MODES[] = { "none", "edge", "center" };
     String y;
-    y += "# NanoBee settings. Units: steps, steps/s, steps/s^2. Lists are per joint J0..J4.\n";
+    y += "# NanoBee settings. Units: steps, steps/s, steps/s^2. joint1..joint5 = driver slots X, Y, Z, E0, E1.\n";
     y += "wifi:\n";
     y += "  mode: " + String(s.wifiSta ? "sta" : "ap") + "   # ap = own network, sta = join existing\n";
     y += "  ssid: \"" + s.ssid + "\"\n";
@@ -214,22 +223,22 @@ String toYaml(const Settings& s) {
     y += "  min_speed: " + String(s.minSpeed, 0) + "\n";
     y += "  jog_timeout_ms: " + String(s.jogTimeoutMs) + "\n";
     y += "  blend: " + String(s.blend ? "true" : "false") + "\n";
+    y += "  idle_timeout_ms: " + String(s.idleTimeoutMs) + "\n";
     y += "joints:\n";
-    y += "  steps_per_deg: " + list(s.stepsPerDeg, 4) + "\n";
-    y += "  max_speed: " + list(s.maxSpeed) + "\n";
-    y += "  max_accel: " + list(s.maxAccel) + "\n";
-    y += "  dir_invert: [";
-    for (int j = 0; j < NUM_JOINTS; ++j) y += String(j ? ", " : "") + (s.dirInvert[j] ? "true" : "false");
-    y += "]\n  homing_dir: [";
-    for (int j = 0; j < NUM_JOINTS; ++j) y += String(j ? ", " : "") + String(s.homingDir[j]);
-    y += "]\n  homing: [";
-    static const char* MODES[] = { "none", "edge", "center" };
-    for (int j = 0; j < NUM_JOINTS; ++j) y += String(j ? ", " : "") + MODES[s.homing[j]];
-    y += "]\n";
-    y += "  home_offset_deg: " + list(s.homeOffsetDeg, 3) + "\n";
     y += "  soft_limits: " + String(s.softLimits ? "true" : "false") + "\n";
-    y += "  min_deg: " + list(s.minDeg, 3) + "\n";
-    y += "  max_deg: " + list(s.maxDeg, 3) + "\n";
+    for (int j = 0; j < NUM_JOINTS; ++j) {
+        y += "  joint" + String(j + 1) + ":\n";
+        y += "    steps_per_deg: " + String(s.stepsPerDeg[j], 4) + "\n";
+        y += "    max_speed: " + String(s.maxSpeed[j], 0) + "\n";
+        y += "    max_accel: " + String(s.maxAccel[j], 0) + "\n";
+        y += "    dir_invert: " + String(s.dirInvert[j] ? "true" : "false") + "\n";
+        y += "    idle_disable: " + String(s.idleDisable[j] ? "true" : "false") + "\n";
+        y += "    homing: " + String(MODES[s.homing[j]]) + "\n";
+        y += "    homing_dir: " + String(s.homingDir[j]) + "\n";
+        y += "    home_offset_deg: " + String(s.homeOffsetDeg[j], 3) + "\n";
+        y += "    min_deg: " + String(s.minDeg[j], 3) + "\n";
+        y += "    max_deg: " + String(s.maxDeg[j], 3) + "\n";
+    }
     y += "homing:\n";
     y += "  enabled: " + String(s.homingEnabled ? "true" : "false") + "\n";
     y += "  speed: " + String(s.homingSpeed, 0) + "\n";

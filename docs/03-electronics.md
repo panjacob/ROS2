@@ -34,7 +34,7 @@
 ## 3.3 Driver configuration
 
 * Set microstepping with the jumpers under each socket (16× is a good default; TMC2209
-  standalone often interpolates to 256). The value enters `joints.steps_per_deg` in NanoBee's
+  standalone often interpolates to 256). The value enters `joints.jointN.steps_per_deg` in NanoBee's
   `config.yaml`.
 * **Set the current (Vref)** for each driver *before* connecting motors. Start at ~70 % of the
   motor rated current; raise only if steps are missed.

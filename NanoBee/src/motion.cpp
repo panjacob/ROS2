@@ -42,7 +42,12 @@ static portMUX_TYPE   mux        = portMUX_INITIALIZER_UNLOCKED;
 static volatile uint32_t enBits  = 0;
 static uint32_t       lastOut    = 0xFFFFFFFF;
 static bool           motorsOn   = false;
+static bool           powerOn[NUM_JOINTS];
+static uint32_t       enabledMs  = 0;
+static uint32_t       settleTicks = 0;  // no steps until drivers settle after being switched on (mux)
 static hw_timer_t*    timer      = nullptr;
+
+static constexpr uint32_t ENABLE_SETTLE_TICKS = STEP_TICK_HZ / 500;  // 2 ms
 
 static Segment  segBuf[SEG_LEN];
 static int      segHead = 0, segCount = 0;
@@ -109,11 +114,9 @@ static void IRAM_ATTR endSegments(bool flagUnderrun) {
     }
 }
 
-static void IRAM_ATTR onTick() {
+// Must hold mux. Advances all joints by one tick; returns the STEP bits to pulse.
+static uint32_t IRAM_ATTR advance() {
     uint32_t steps = 0;
-    uint32_t out   = enBits;
-
-    portENTER_CRITICAL_ISR(&mux);
     if (!segRun && segCount) startNextSegment();
 
     if (segRun) {
@@ -206,6 +209,19 @@ static void IRAM_ATTR onTick() {
             }
         }
     }
+    return steps;
+}
+
+static void IRAM_ATTR onTick() {
+    uint32_t steps = 0;
+
+    portENTER_CRITICAL_ISR(&mux);
+    uint32_t out = enBits;
+    if (settleTicks) {
+        --settleTicks;
+    } else {
+        steps = advance();
+    }
     for (int j = 0; j < NUM_JOINTS; ++j) {
         if (joints[j].dirPos != cfg.dirInvert[j]) out |= 1u << DIR_BIT[j];
     }
@@ -247,16 +263,54 @@ void begin() {
     timerAlarm(timer, 1000000 / STEP_TICK_HZ, true, 0);
 }
 
-void setEnabled(bool on) {
+// Must hold mux.
+static void updateEnBits() {
     uint32_t bits = 0;
     for (int j = 0; j < NUM_JOINTS; ++j) {
+        bool on = motorsOn && powerOn[j];
         if (on != EN_ACTIVE_LOW) bits |= 1u << EN_BIT[j];
     }
+    enBits = bits;
+}
+
+void setEnabled(bool on) {
+    portENTER_CRITICAL(&mux);
+    bool wake = false;
+    for (int j = 0; j < NUM_JOINTS; ++j) {
+        if (on && !(motorsOn && powerOn[j])) wake = true;
+        powerOn[j] = on;
+    }
     motorsOn = on;
-    enBits   = bits;
+    if (wake) settleTicks = ENABLE_SETTLE_TICKS;
+    updateEnBits();
+    portEXIT_CRITICAL(&mux);
+    if (on) enabledMs = millis();
 }
 
 bool enabled() { return motorsOn; }
+
+uint32_t enabledAtMs() { return enabledMs; }
+
+// Only while every joint is at rest: the wake-up settle delay pauses all joints.
+bool powerOff(int j) {
+    if (j < 0 || j >= NUM_JOINTS) return false;
+    portENTER_CRITICAL(&mux);
+    bool ok = !segRun && !segCount;
+    for (auto& J : joints) ok &= J.mode == IDLE;
+    if (ok) {
+        powerOn[j] = false;
+        updateEnBits();
+    }
+    portEXIT_CRITICAL(&mux);
+    return ok;
+}
+
+bool powered(int j) {
+    portENTER_CRITICAL(&mux);
+    bool r = motorsOn && powerOn[j];
+    portEXIT_CRITICAL(&mux);
+    return r;
+}
 
 void moveTo(const int32_t target[NUM_JOINTS], float speed, float accel) {
     int32_t cur[NUM_JOINTS];
@@ -302,6 +356,7 @@ bool pushSegment(const int32_t target[NUM_JOINTS], uint32_t ticks) {
         da[j]   = toQaccel(cfg.maxAccel[j]);
         vmin[j] = toQ(cfg.minSpeed);
     }
+    setEnabled(true);  // before queuing, so the settle delay applies to the first tick
 
     portENTER_CRITICAL(&mux);
     bool busy = segCount == SEG_LEN;
@@ -328,7 +383,6 @@ bool pushSegment(const int32_t target[NUM_JOINTS], uint32_t ticks) {
     }
     ++segCount;
     portEXIT_CRITICAL(&mux);
-    setEnabled(true);
     return true;
 }
 

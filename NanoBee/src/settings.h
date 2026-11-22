@@ -18,12 +18,14 @@ struct Settings {
     float    minSpeed     = 100;  // start/stop speed
     uint32_t jogTimeoutMs = 500;  // 0 = off
     bool     blend        = true;  // T segments run back to back without stopping
+    uint32_t idleTimeoutMs = 5000;  // power off joints with idle_disable after this long at rest, 0 = never
 
     // joints
     float      stepsPerDeg[NUM_JOINTS] = { 17.7778, 17.7778, 17.7778, 17.7778, 17.7778 };
     float      maxSpeed[NUM_JOINTS]  = { 5000, 5000, 5000, 5000, 5000 };
     float      maxAccel[NUM_JOINTS]  = { 10000, 10000, 10000, 10000, 10000 };
     bool       dirInvert[NUM_JOINTS] = { false, false, false, false, false };
+    bool       idleDisable[NUM_JOINTS] = { false, false, false, false, false };  // driver off when idle
     int8_t     homingDir[NUM_JOINTS] = { -1, -1, -1, -1, -1 };
     HomingMode homing[NUM_JOINTS]    = { HOME_NONE, HOME_NONE, HOME_NONE, HOME_NONE, HOME_NONE };
     float      homeOffsetDeg[NUM_JOINTS] = { 0, 0, 0, 0, 0 };  // position assigned at the home reference

@@ -9,7 +9,7 @@
     arm.move_all([10, 20, 0, 0, 0], speed=45, wait=True)
     arm.stop()
 
-Angles are in degrees, converted with joints.steps_per_deg from config.yaml.
+Angles are in degrees, converted with joints.jointN.steps_per_deg from config.yaml.
 """
 
 import re
@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 NUM_JOINTS = 5
-_STATUS_RE = re.compile(r"<(\w+) P:([-\d,]+) Q:(\d+)(?: F:(\d+))? E:(\d) L:(\d*)(?: H:([01]+))?>")
+_STATUS_RE = re.compile(
+    r"<(\w+) P:([-\d,]+) Q:(\d+)(?: F:(\d+))? E:(\d) L:(\d*)(?: H:([01]+))?(?: O:([01]+))?>")
 _SPD_RE = re.compile(r"^\s*steps_per_deg\s*:\s*\[([^\]]*)\]", re.MULTILINE)
 
 
@@ -39,6 +40,7 @@ class Status:
     endstops: str  # e.g. "010" for J0..J2, "1" = triggered
     free: int = 0  # free slots in the move queue
     referenced: str = ""  # per joint "1" = homed / zeroed (soft limits active)
+    powered: str = ""  # per joint "1" = driver on ("0" = disabled or switched off while idle)
 
     @property
     def idle(self):
@@ -206,12 +208,33 @@ class NanoBee:
 
     @staticmethod
     def _parse_spd(yaml):
+        """steps_per_deg from joints.joint1..joint5 blocks (or the older joints.steps_per_deg list)."""
         m = _SPD_RE.search(yaml)
-        if not m:
-            raise NanoBeeError("joints.steps_per_deg missing from config")
-        spd = [float(x) for x in m.group(1).split(",")]
-        if len(spd) != NUM_JOINTS or any(v <= 0 for v in spd):
-            raise NanoBeeError("joints.steps_per_deg needs 5 positive values")
+        try:
+            if m:
+                spd = [float(x) for x in m.group(1).split(",")]
+            else:
+                spd = [None] * NUM_JOINTS
+                section = joint = None
+                for line in yaml.splitlines():
+                    line = line.split("#", 1)[0].rstrip()
+                    if not line.strip():
+                        continue
+                    indent = len(line) - len(line.lstrip())
+                    key, _, val = line.strip().partition(":")
+                    val = val.strip()
+                    if indent == 0:
+                        section, joint = key, None
+                    elif section == "joints" and not val:
+                        jm = re.fullmatch(r"joint(\d+)", key)
+                        joint = int(jm.group(1)) - 1 if jm else None
+                    elif section == "joints" and key == "steps_per_deg" and joint is not None:
+                        if 0 <= joint < NUM_JOINTS:
+                            spd[joint] = float(val)
+        except ValueError:
+            raise NanoBeeError("steps_per_deg must be a number") from None
+        if len(spd) != NUM_JOINTS or any(v is None or v <= 0 for v in spd):
+            raise NanoBeeError("joints.joint1..joint5 each need a positive steps_per_deg")
         return spd
 
     def pull_config(self):
@@ -253,6 +276,7 @@ class NanoBee:
             enabled=m.group(5) == "1",
             endstops=m.group(6),
             referenced=m.group(7) or "",
+            powered=m.group(8) or "",
         )
 
     def angles(self):

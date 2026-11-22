@@ -8,13 +8,15 @@
 //   J v0 v1 v2 v3 v4 [accel]          jog velocities (steps/s); repeat within jog_timeout_ms
 //   S                                 decelerate to stop, clear queue, cancel homing
 //   !                                 instant halt (real-time on serial, no newline needed)
-//   E 0|1                             disable / enable drivers (disable drops the home reference)
+//   E 0|1                             disable / enable drivers (disable drops the home reference);
+//                                     joints with joints.jointN.idle_disable also switch off by themselves
+//                                     after motion.idle_timeout_ms at rest and wake on the next move
 //   Z [p0 p1 p2 p3 p4]                set current position (default 0); joints count as referenced
-//   H [j]                             home joint j, or all joints with joints.homing != none
+//   H [j]                             home joint j, or all joints with joints.jointN.homing != none
 //   V speed accel                     default speed/accel (until reboot)
 //   G us                              servo pulse on GPIO2 (500..2500, 0 = off)
 //   VER                               "NanoBee <protocol> joints=<n>"
-//   ?                                 <State P:p0,..,p4 Q:queued F:free E:enabled L:endstops H:referenced>
+//   ?                                 <State P:p0,..,p4 Q:queued F:free E:enabled L:endstops H:referenced O:powered>
 // Asynchronous messages (not replies) start with "# ", e.g. "# homed 0", "# err home 0: ...".
 
 #include <Arduino.h>
@@ -275,10 +277,31 @@ String statusLine() {
     }
     s += " H:";
     for (int j = 0; j < NUM_JOINTS; ++j) s += referenced[j] ? '1' : '0';
+    s += " O:";
+    for (int j = 0; j < NUM_JOINTS; ++j) s += Motion::powered(j) ? '1' : '0';
     return s + ">";
 }
 
 bool machineIdle() { return homePhase == H_NONE && !qCount && Motion::idle(); }
+
+// Switches off joints with joints.jointN.idle_disable once the machine has rested for motion.idle_timeout_ms.
+// Positions and home references are kept; the next move/jog/home re-powers every joint.
+static void idlePowerTask() {
+    static uint32_t busyMs = 0;
+    uint32_t now = millis();
+    if (!machineIdle()) {
+        busyMs = now;
+        return;
+    }
+    if (!cfg.idleTimeoutMs || !Motion::enabled()) return;
+    uint32_t rest = now - busyMs;
+    uint32_t sinceEnable = now - Motion::enabledAtMs();  // a short move may finish between two loops
+    if (sinceEnable < rest) rest = sinceEnable;
+    if (rest < cfg.idleTimeoutMs) return;
+    for (int j = 0; j < NUM_JOINTS; ++j) {
+        if (cfg.idleDisable[j] && Motion::powered(j)) Motion::powerOff(j);
+    }
+}
 
 String takeEvents() {
     String e = events;
@@ -423,13 +446,13 @@ static const char* handleLine(const char* line) {
             if (n == 1) {
                 int j = (int)a[0];
                 if (j < 0 || j >= NUM_JOINTS || a[0] != j) return "bad joint";
-                if (cfg.homing[j] == HOME_NONE) return "joint has no homing (joints.homing)";
+                if (cfg.homing[j] == HOME_NONE) return "joint has no homing (joints.jointN.homing)";
                 todo = 1u << j;
             } else {
                 for (int j = 0; j < NUM_JOINTS; ++j) {
                     if (cfg.homing[j] != HOME_NONE) todo |= 1u << j;
                 }
-                if (!todo) return "no joint has homing (joints.homing)";
+                if (!todo) return "no joint has homing (joints.jointN.homing)";
             }
             for (int j = 0; j < NUM_JOINTS; ++j) {
                 if (todo & (1u << j)) {
@@ -583,4 +606,6 @@ void loop() {
     if (cfg.jogTimeoutMs && homePhase == H_NONE && Motion::anyJogging() && millis() - lastJogMs > cfg.jogTimeoutMs) {
         Motion::stop();
     }
+
+    idlePowerTask();
 }
