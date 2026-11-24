@@ -6,6 +6,7 @@
   Joint names, axes, origins and limits match arm.urdf.xacro and FluidNC mapping.
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="printed_arm_concept">
+  <xacro:include filename="gazebo_control.xacro"/>
 
   <xacro:property name="base_h" value="0.080"/>
   <xacro:property name="shoulder_h" value="0.050"/>
@@ -53,7 +54,7 @@
       <child link="${child}"/>
       <origin xyz="0 0 ${z}" rpy="0 0 0"/>
       <axis xyz="${axis}"/>
-      <limit lower="${lower}" upper="${upper}" velocity="${vel}" effort="5.0"/>
+      <xacro:arm_joint_limit lower="${lower}" upper="${upper}" velocity="${vel}"/>
     </joint>
   </xacro:macro>
 

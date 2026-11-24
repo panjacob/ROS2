@@ -17,6 +17,7 @@ POST /api/tcp/save  {"name": "gripper", "x_mm": 0, ..., "yaw_deg": 0}
 POST /api/tcp/select {"name": "gripper"}
 POST /api/tcp/delete {"name": "gripper"}
 POST /api/plan      {"joint1": deg, ..., "joint5": deg}  plan only, preview in RViz
+POST /api/plan_tcp  {"tcp_name": "gripper", "x_mm": 100, "y_mm": 0, "z_mm": 300}
 POST /api/execute   {"plan_id": "..."}      execute previewed plan (simulator or NanoBee bridge)
 """
 
@@ -33,6 +34,7 @@ import rclpy
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import TransformStamped
 from moveit_msgs.action import ExecuteTrajectory, MoveGroup
+from moveit_msgs.srv import GetPositionFK
 from moveit_msgs.msg import (Constraints, DisplayTrajectory, JointConstraint,
                              MoveItErrorCodes)
 from rclpy.action import ActionClient
@@ -41,12 +43,14 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import CompressedImage, JointState, Joy
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
 
 from arm_web.tcp_registry import (
     TcpRegistry, quaternion_from_rpy_degrees, rpy_degrees_from_quaternion)
+from arm_web.tcp_planning import (PointKinematics, POSITION_TOLERANCE_M,
+                                  selected_tcp, transformed_point, validate_tcp_goal)
 from arm_web.joint_planning import (check_plan_start, joint_limits_from_urdf,
                                     validate_joint_goal)
 
@@ -67,7 +71,8 @@ PLAN_ERRORS = {
     MoveItErrorCodes.GOAL_IN_COLLISION: 'Target pose is in collision.',
     MoveItErrorCodes.START_STATE_INVALID: 'Current robot state is invalid.',
     MoveItErrorCodes.GOAL_STATE_INVALID: 'Target robot state is invalid.',
-    MoveItErrorCodes.INVALID_GOAL_CONSTRAINTS: 'Target joint constraints are invalid.',
+    MoveItErrorCodes.INVALID_GOAL_CONSTRAINTS: 'Target constraints are invalid.',
+    MoveItErrorCodes.NO_IK_SOLUTION: 'No reachable TCP solution found within joint limits.',
     MoveItErrorCodes.GOAL_CONSTRAINTS_VIOLATED: 'Planned path does not reach the target.',
     MoveItErrorCodes.ROBOT_STATE_STALE: 'Robot joint state is stale.',
     MoveItErrorCodes.INVALID_GROUP_NAME: 'MoveIt arm group is missing.',
@@ -198,6 +203,14 @@ class WebViewer(Node):
         self.port = int(self.declare_parameter('port', 8080).value)
         bridge_ns = self.declare_parameter('bridge_ns', '/nanobee_bridge').value.rstrip('/')
         self.simulation = bool(self.declare_parameter('simulation', False).value)
+        self.direct_motion_available = bool(
+            self.declare_parameter('direct_motion_available', True).value)
+        self.jog_available = bool(
+            self.declare_parameter('jog_available', self.direct_motion_available).value)
+        self._jog_until = 0.0
+        self.require_scene_ready = bool(self.declare_parameter('require_scene_ready', False).value)
+        self.scene_ready = not self.require_scene_ready
+        self.demo_target_mm = list(self.declare_parameter('demo_target_mm', [0.0, 0.0, 0.0]).value)
         configured_home_joints = self.declare_parameter('home_joints', ['joint1']).value
         self.home_joints = [] if self.simulation else list(configured_home_joints)
         self.max_jog_speed = float(self.declare_parameter('max_jog_speed', 360.0).value)
@@ -215,12 +228,16 @@ class WebViewer(Node):
         self.store = StateStore()
         urdf = self.declare_parameter('robot_description', '').value
         self.robot_name, self.joint_limits = joint_limits_from_urdf(urdf)
+        self._point_kinematics = PointKinematics(urdf, self.joint_limits)
+        self._plan_generation = 0
         self._plan_lock = threading.Lock()
         self._plan_state_lock = threading.Lock()
         self._plan_record = None
         self._plan_status = {'state': 'none', 'message': 'No plan yet.'}
         self._execution_goal_handle = None
+        self._execution_pending = False
         self._plan_client = ActionClient(self, MoveGroup, 'move_action')
+        self._fk_client = self.create_client(GetPositionFK, 'compute_fk')
         self._execute_client = ActionClient(
             self, ExecuteTrajectory, 'execute_trajectory')
         preview_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -244,6 +261,8 @@ class WebViewer(Node):
         self.create_subscription(
             CompressedImage, camera2_topic, self.camera2.update, qos_profile_sensor_data)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        if self.require_scene_ready:
+            self.create_subscription(Bool, f'{bridge_ns}/scene_ready', self._scene_readiness, latched)
         for key, msg_type in STATUS_TOPICS.items():
             qos = latched if key in LATCHED_STATUS else 10
             self.create_subscription(
@@ -269,8 +288,14 @@ class WebViewer(Node):
             'max_jog_speed': self.max_jog_speed,
             'simulation': self.simulation,
             'execution_available': True,
+            'direct_motion_available': self.direct_motion_available,
+            'jog_available': self.jog_available,
+            'jog_active': time.monotonic() < self._jog_until,
+            'scene_ready': self.scene_ready,
+            'demo_target_mm': self.demo_target_mm if self.require_scene_ready else None,
             'velocity_scaling': self.velocity_scaling,
             'reference_frame': self.reference_frame,
+            'tcp_position_tolerance_mm': POSITION_TOLERANCE_M * 1000,
             'joint_limits_deg': {
                 name: [math.degrees(lo), math.degrees(hi)]
                 for name, (lo, hi) in self.joint_limits.items()},
@@ -291,12 +316,21 @@ class WebViewer(Node):
                     status['message'] = 'Plan expired; plan again.'
             return status
 
+    def _scene_readiness(self, msg):
+        self.scene_ready = bool(msg.data)
+        if not self.scene_ready:
+            self._invalidate_plan('Waiting for the tabletop collision scene.')
+
     def _invalidate_plan(self, message='Plan invalidated by another command.'):
         with self._plan_state_lock:
-            had_plan = self._plan_record is not None
-            self._plan_record = None
-            if self._plan_status['state'] != 'executing':
-                self._plan_status = {'state': 'none', 'message': message}
+            self._invalidate_plan_locked(message)
+
+    def _invalidate_plan_locked(self, message='Plan invalidated by another command.'):
+        had_plan = self._plan_record is not None
+        self._plan_generation += 1
+        self._plan_record = None
+        if self._plan_status['state'] != 'executing':
+            self._plan_status = {'state': 'none', 'message': message}
         if had_plan:
             self._preview_pub.publish(DisplayTrajectory())
 
@@ -331,23 +365,32 @@ class WebViewer(Node):
 
     def select_tcp(self, body):
         name = body.get('name')
-        self.tcps.select(name)
-        self.store.reset_tcp()
+        self._change_tcp(lambda: self.tcps.select(name))
         return True, f'TCP {name} selected'
 
     def save_tcp(self, body):
         name = body.get('name')
         xyz_m = [float(body[f'{axis}_mm']) / 1000 for axis in 'xyz']
         rpy_deg = [float(body[f'{axis}_deg']) for axis in ('roll', 'pitch', 'yaw')]
-        self.tcps.save(name, xyz_m, rpy_deg)
-        self.store.reset_tcp()
+        self._change_tcp(lambda: self.tcps.save(name, xyz_m, rpy_deg))
         return True, f'TCP {name} saved and selected'
 
     def delete_tcp(self, body):
         name = body.get('name')
-        self.tcps.delete(name)
-        self.store.reset_tcp()
+        self._change_tcp(lambda: self.tcps.delete(name))
         return True, f'TCP {name} deleted'
+
+    def _change_tcp(self, change):
+        # Same lock order as planning/execute: plan state, then TCP registry.
+        with self._plan_state_lock:
+            if self._execution_pending or self._plan_status['state'] == 'executing':
+                raise ValueError('Wait for execution to finish before changing TCP.')
+            change()
+            self._plan_generation += 1
+            self._plan_record = None
+            self._plan_status = {'state': 'none', 'message': 'TCP changed; plan again.'}
+            self.store.reset_tcp()
+            self._preview_pub.publish(DisplayTrajectory())
 
     # --- actions (called from HTTP threads; the main thread spins) ---
 
@@ -359,14 +402,34 @@ class WebViewer(Node):
         return msg
 
     def jog(self, values):
+        if not getattr(self, 'jog_available', getattr(self, 'direct_motion_available', True)):
+            return False, 'Jog is unavailable.'
         limit = self.max_jog_speed
+        if not isinstance(values, dict) or any(
+                name not in self.joint_limits or not math.isfinite(float(value))
+                for name, value in values.items()):
+            return False, 'Jog requires known joints and finite velocities.'
         values = {k: max(-limit, min(limit, float(v))) for k, v in values.items()}
+        if getattr(self, 'require_scene_ready', False):
+            with self._plan_state_lock:
+                if self._execution_pending or self._plan_status['state'] == 'executing':
+                    return False, 'Jog is unavailable during planned execution; use STOP first.'
+                if any(values.values()):
+                    state = self.store.snapshot()
+                    if not self.scene_ready or state['joints_age'] is None or state['joints_age'] > 0.5:
+                        return False, 'Wait for the Gazebo scene and fresh joint state.'
+                    self._invalidate_plan_locked()
+                self._jog_until = time.monotonic() + (0.3 if any(values.values()) else 0.2)
+                self._jog_pub.publish(self._joint_state(values, 'velocity'))
+            return True, 'Jog sent (without collision checking)'
         if any(values.values()):
             self._invalidate_plan()
         self._jog_pub.publish(self._joint_state(values, 'velocity'))
         return True, 'ok'
 
     def goto(self, values):
+        if not getattr(self, 'direct_motion_available', True):
+            return False, 'Gazebo demo uses previewed plans; direct movement is unavailable.'
         if not values:
             return False, 'no joints given'
         self._invalidate_plan()
@@ -374,40 +437,86 @@ class WebViewer(Node):
         return True, 'sent'
 
     def plan(self, values):
+        return self._plan(values, tcp_goal=False)
+
+    def plan_tcp(self, values):
+        return self._plan(values, tcp_goal=True)
+
+    def _plan(self, values, tcp_goal):
+        if time.monotonic() < getattr(self, '_jog_until', 0.0):
+            return False, 'Release Jog and wait for the arm to stop before planning.'
+        if not getattr(self, 'scene_ready', True):
+            return False, 'Waiting for the Gazebo tabletop collision scene.'
         if not self._plan_lock.acquire(blocking=False):
             return False, 'Planning is already in progress.'
         try:
             with self._plan_state_lock:
-                if self._plan_status['state'] == 'executing':
+                if self._execution_pending or self._plan_status['state'] == 'executing':
                     return False, 'Wait for the current execution to finish.'
+                self._plan_generation += 1
+                generation = self._plan_generation
                 self._plan_record = None
                 self._plan_status = {'state': 'planning', 'message': 'Planning…'}
-            ok, message = self._plan_locked(values)
+                self._preview_pub.publish(DisplayTrajectory())
+            try:
+                ok, message, record = self._plan_locked(values, tcp_goal, generation)
+            except (ValueError, KeyError) as exc:
+                ok, message, record = False, str(exc), None
             with self._plan_state_lock:
+                if generation != self._plan_generation:
+                    return False, 'Planning invalidated by another command; plan again.'
                 if not ok:
                     self._plan_status = {'state': 'failed', 'message': message}
                     return False, message
-                plan_id = self._plan_record['id']
-                self._plan_status = {'state': 'ready', 'message': message}
-                return True, message, {'plan_id': plan_id}
+                self._plan_record = record
+                self._plan_status = {'state': 'ready', 'message': message,
+                                     'kind': 'tcp' if tcp_goal else 'joints'}
+                self._preview_pub.publish(record.pop('preview'))
+                return True, message, {'plan_id': record['id']}
         finally:
             self._plan_lock.release()
 
-    def _plan_locked(self, values):
-        # A previous preview must not be mistaken for the answer to this request.
-        self._preview_pub.publish(DisplayTrajectory())
+    def _planning_cancelled(self, generation):
+        with self._plan_state_lock:
+            return generation != self._plan_generation
+
+    def _target_in_root(self, target):
+        root = self._point_kinematics.root_frame
+        if root == self.reference_frame:
+            return target
         try:
-            target = validate_joint_goal(values, self.joint_limits)
-        except ValueError as exc:
-            return False, str(exc)
+            tf = self._tf_buffer.lookup_transform(root, self.reference_frame, Time()).transform
+        except TransformException as exc:
+            raise ValueError(f'Cannot transform target from {self.reference_frame} to {root}.') from exc
+        t, r = tf.translation, tf.rotation
+        return transformed_point([t.x, t.y, t.z], [r.x, r.y, r.z, r.w], target).tolist()
+
+    def _plan_locked(self, values, tcp_goal, generation):
+        context = None
+        if tcp_goal:
+            tcp, xyz = validate_tcp_goal(values, self.tcps.snapshot())
+            context = {'tcp': tcp, 'target_m': xyz, 'reference_frame': self.reference_frame,
+                       'target_root_m': self._target_in_root(xyz)}
+        else:
+            targets = [validate_joint_goal(values, self.joint_limits)]
         state = self.store.snapshot()
         if state['joints_age'] is None or state['joints_age'] > 2.0 or any(
                 name not in state['joints'] or
-                state['joints'][name]['position_rad'] is None
+                state['joints'][name]['position_rad'] is None or
+                not math.isfinite(state['joints'][name]['position_rad'])
                 for name in self.joint_limits):
-            return False, 'No fresh joint state. Wait for /joint_states and try again.'
+            return False, 'No fresh joint state. Wait for /joint_states and try again.', None
         if not self._plan_client.wait_for_server(timeout_sec=1.0):
-            return False, 'MoveIt planner is unavailable (/move_action).'
+            return False, 'MoveIt planner is unavailable (/move_action).', None
+        if tcp_goal:
+            targets = self._point_kinematics.solve(
+                context['target_root_m'], tcp['xyz_m'],
+                {name: state['joints'][name]['position_rad'] for name in self.joint_limits},
+                cancelled=lambda: self._planning_cancelled(generation))
+            if not targets:
+                return False, 'No reachable TCP solution found within joint limits and IK search time.', None
+        if self._planning_cancelled(generation):
+            return False, 'Planning invalidated by another command.', None
 
         goal = MoveGroup.Goal()
         goal.request.group_name = 'arm'
@@ -417,68 +526,133 @@ class WebViewer(Node):
         goal.request.max_velocity_scaling_factor = self.velocity_scaling
         goal.request.max_acceleration_scaling_factor = self.acceleration_scaling
         goal.request.start_state.is_diff = True
-        constraints = Constraints()
-        for name, position in target.items():
-            constraint = JointConstraint()
-            constraint.joint_name = name
-            constraint.position = position
-            constraint.tolerance_above = 0.001
-            constraint.tolerance_below = 0.001
-            constraint.weight = 1.0
-            constraints.joint_constraints.append(constraint)
-        goal.request.goal_constraints = [constraints]
+        # Each Constraints entry is an alternative goal. MoveIt checks joint
+        # bounds, robot/world collisions and the entire path to these candidates.
+        for target in targets:
+            constraints = Constraints()
+            for name, position in target.items():
+                constraint = JointConstraint()
+                constraint.joint_name = name
+                constraint.position = position
+                constraint.tolerance_above = 0.0001 if tcp_goal else 0.001
+                constraint.tolerance_below = constraint.tolerance_above
+                constraint.weight = 1.0
+                constraints.joint_constraints.append(constraint)
+            goal.request.goal_constraints.append(constraints)
         goal.planning_options.plan_only = True
 
         try:
             accepted = self._wait_future(self._plan_client.send_goal_async(goal), 3.0)
             if accepted is None:
-                return False, 'MoveIt did not accept the request in time.'
+                return False, 'MoveIt did not accept the request in time.', None
             if not accepted.accepted:
-                return False, 'MoveIt rejected the planning request.'
+                return False, 'MoveIt rejected the planning request.', None
+            if self._planning_cancelled(generation):
+                accepted.cancel_goal_async()
+                return False, 'Planning invalidated by another command.', None
             response = self._wait_future(accepted.get_result_async(), 12.0)
             if response is None:
                 accepted.cancel_goal_async()
-                return False, 'Planning timed out.'
+                return False, 'Planning timed out.', None
         except Exception as exc:
             self.get_logger().error(f'MoveIt planning request failed: {exc}')
-            return False, 'Planner communication failed; see ROS logs.'
+            return False, 'Planner communication failed; see ROS logs.', None
 
         result = response.result
         if result.error_code.val != MoveItErrorCodes.SUCCESS:
             reason = PLAN_ERRORS.get(result.error_code.val,
                                      f'MoveIt error code {result.error_code.val}.')
-            return False, reason
+            return False, reason, None
         points = result.planned_trajectory.joint_trajectory.points
         if not points:
-            return False, 'MoveIt returned an empty trajectory.'
+            return False, 'MoveIt returned an empty trajectory.', None
         start_state = result.trajectory_start.joint_state
         start_positions = dict(zip(start_state.name, start_state.position))
-        if any(name not in start_positions for name in self.joint_limits):
-            return False, 'MoveIt returned a plan without a complete start state.'
+        if any(name not in start_positions or not math.isfinite(start_positions[name])
+               for name in self.joint_limits):
+            return False, 'MoveIt returned a plan without a complete start state.', None
+        if tcp_goal:
+            ok, message = self._verify_tcp_endpoint(result, context)
+            if not ok:
+                return False, message, None
         seconds = (points[-1].time_from_start.sec +
                    points[-1].time_from_start.nanosec * 1e-9)
         preview = DisplayTrajectory()
         preview.model_id = self.robot_name
         preview.trajectory_start = result.trajectory_start
         preview.trajectory = [result.planned_trajectory]
-        self._preview_pub.publish(preview)
-        with self._plan_state_lock:
-            self._plan_record = {
-                'id': secrets.token_urlsafe(12),
-                'created': time.monotonic(),
-                'trajectory': result.planned_trajectory,
-                'start': {name: start_positions[name] for name in self.joint_limits},
-                'duration': seconds,
-            }
+        record = {
+            'id': secrets.token_urlsafe(12),
+            'created': time.monotonic(),
+            'trajectory': result.planned_trajectory,
+            'start': {name: start_positions[name] for name in self.joint_limits},
+            'duration': seconds,
+            'preview': preview,
+            'tcp_context': context,
+        }
         return True, (f'Plan ready: {len(points)} points, {seconds:.1f} s. '
-                      'Preview in RViz; ready to execute.')
+                      'Preview in RViz; ready to execute.'), record
+
+    def _verify_tcp_endpoint(self, result, context):
+        trajectory = result.planned_trajectory.joint_trajectory
+        end = trajectory.points[-1]
+        positions = dict(zip(trajectory.joint_names, end.positions))
+        if len(end.positions) != len(trajectory.joint_names) or any(
+                name not in positions or not math.isfinite(positions[name])
+                for name in self.joint_limits):
+            return False, 'MoveIt returned an incomplete TCP endpoint.'
+        actual = self._point_kinematics.point(positions, context['tcp']['xyz_m'])
+        if math.dist(actual, context['target_root_m']) > POSITION_TOLERANCE_M:
+            return False, 'Planned TCP endpoint misses the target; plan rejected.'
+        # Independently verify against MoveIt's own robot model and reference
+        # frame. A model/frame mismatch must never become an executable preview.
+        if not self._fk_client.wait_for_service(timeout_sec=1.0):
+            return False, 'MoveIt FK verification is unavailable (/compute_fk).'
+        request = GetPositionFK.Request()
+        request.header.frame_id = context['reference_frame']
+        request.fk_link_names = ['tool0']
+        request.robot_state.joint_state.name = list(positions)
+        request.robot_state.joint_state.position = list(positions.values())
+        try:
+            response = self._wait_future(self._fk_client.call_async(request), 3.0)
+        except Exception as exc:
+            self.get_logger().error(f'TCP endpoint FK failed: {exc}')
+            return False, 'MoveIt FK verification failed; plan rejected.'
+        if (response is None or response.error_code.val != MoveItErrorCodes.SUCCESS or
+                response.fk_link_names != ['tool0'] or len(response.pose_stamped) != 1):
+            return False, 'MoveIt could not verify the TCP endpoint; plan rejected.'
+        pose = response.pose_stamped[0]
+        if pose.header.frame_id != context['reference_frame']:
+            return False, 'MoveIt FK returned an unexpected reference frame; plan rejected.'
+        t, r = pose.pose.position, pose.pose.orientation
+        actual = transformed_point([t.x, t.y, t.z], [r.x, r.y, r.z, r.w],
+                                   context['tcp']['xyz_m'])
+        error = math.dist(actual, context['target_m'])
+        if not math.isfinite(error) or error > POSITION_TOLERANCE_M:
+            return False, 'MoveIt TCP endpoint misses the target; plan rejected.'
+        context['endpoint_error_mm'] = error * 1000
+        return True, 'TCP endpoint verified.'
 
     def execute(self, body):
+        if time.monotonic() < getattr(self, '_jog_until', 0.0):
+            return False, 'Release Jog and preview again before executing.'
+        if not getattr(self, 'scene_ready', True):
+            return False, 'Waiting for the Gazebo tabletop collision scene; preview again.'
         plan_id = body.get('plan_id')
         with self._plan_state_lock:
             record = self._plan_record
             if record is None or record['id'] != plan_id or self._plan_status['state'] != 'ready':
                 return False, 'No matching ready plan. Plan again before executing.'
+            context = record.get('tcp_context')
+            try:
+                tcp_changed = bool(context) and selected_tcp(
+                    self.tcps.snapshot(), context['tcp']['name']) != context['tcp']
+            except ValueError:
+                tcp_changed = True
+            if tcp_changed:
+                self._plan_record = None
+                self._plan_status = {'state': 'none', 'message': 'TCP changed; plan again.'}
+                return False, 'TCP changed; plan again.'
             if time.monotonic() - record['created'] > PLAN_TTL:
                 self._plan_record = None
                 self._plan_status = {'state': 'expired', 'message': 'Plan expired; plan again.'}
@@ -493,12 +667,14 @@ class WebViewer(Node):
             except ValueError as exc:
                 return False, str(exc)
             self._plan_record = None  # single use
+            self._execution_pending = True
             self._plan_status = {'state': 'executing', 'message': 'Executing plan…'}
         self._preview_pub.publish(DisplayTrajectory())
 
         ok, message = self._execute_trajectory(record)
         with self._plan_state_lock:
-            stopped = self._plan_status['state'] == 'stopped'
+            stopped = self._plan_status['state'] != 'executing'
+            self._execution_pending = False
             if not stopped:
                 self._plan_status = {
                     'state': 'completed' if ok else 'failed', 'message': message}
@@ -508,6 +684,9 @@ class WebViewer(Node):
     def _execute_trajectory(self, record):
         if not self._execute_client.wait_for_server(timeout_sec=2.0):
             return False, 'MoveIt execution action is unavailable.'
+        with self._plan_state_lock:
+            if self._plan_status['state'] != 'executing':
+                return False, 'Execution stopped.'
         goal = ExecuteTrajectory.Goal()
         goal.trajectory = record['trajectory']
         try:
@@ -516,7 +695,7 @@ class WebViewer(Node):
                 return False, 'MoveIt rejected trajectory execution.'
             with self._plan_state_lock:
                 self._execution_goal_handle = accepted
-                stopped = self._plan_status['state'] == 'stopped'
+                stopped = self._plan_status['state'] != 'executing'
             if stopped:
                 accepted.cancel_goal_async()
             response = self._wait_future(
@@ -541,13 +720,19 @@ class WebViewer(Node):
 
     def stop(self):
         with self._plan_state_lock:
+            self._plan_generation += 1
             self._plan_record = None
             self._plan_status = {'state': 'stopped', 'message': 'Stopped.'}
             handle = self._execution_goal_handle
-        self._preview_pub.publish(DisplayTrajectory())
+            self._preview_pub.publish(DisplayTrajectory())
         if handle is not None:
             handle.cancel_goal_async()
-        return self.call('stop')
+        result = self.call('stop')
+        if getattr(self, 'require_scene_ready', False) and hasattr(self, '_jog_pub'):
+            # Release the jog latch after STOP, so the next deliberate press works.
+            self._jog_pub.publish(self._joint_state(dict.fromkeys(self.joint_limits, 0.0), 'velocity'))
+            self._jog_until = time.monotonic() + 0.2
+        return result
 
     @staticmethod
     def _wait_future(future, timeout):
@@ -558,6 +743,8 @@ class WebViewer(Node):
         return future.result()
 
     def joy(self, axes, buttons):
+        if not getattr(self, 'direct_motion_available', True):
+            return False, 'Gazebo demo uses previewed plans; gamepad motion is unavailable.'
         msg = Joy()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.axes = [float(a) for a in axes]
@@ -671,6 +858,8 @@ def make_handler(node, page_path):
                 return node.goto(body)
             if path == '/api/plan':
                 return node.plan(body)
+            if path == '/api/plan_tcp':
+                return node.plan_tcp(body)
             if path == '/api/execute':
                 return node.execute(body)
             if path == '/api/joy':
