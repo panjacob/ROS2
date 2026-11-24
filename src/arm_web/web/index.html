@@ -78,20 +78,9 @@
   </div>
 </div>
 
-<div class="card">
+<div class="card" id="camerasCard" hidden>
   <h2>Cameras</h2>
-  <div class="cameras">
-    <div>
-      <h3>USB camera</h3>
-      <p class="muted hint">Status: <span id="camStatus" class="muted">–</span></p>
-      <img id="cam" class="camera" alt="Live USB camera stream" hidden onerror="cameraStreamFailed('cam')">
-    </div>
-    <div>
-      <h3>Phone camera</h3>
-      <p class="muted hint">Status: <span id="cam2Status" class="muted">–</span></p>
-      <img id="cam2" class="camera" alt="Live phone camera stream" hidden onerror="cameraStreamFailed('cam2')">
-    </div>
-  </div>
+  <div id="cameras" class="cameras"></div>
 </div>
 
 <div class="card" id="endstopsCard">
@@ -200,29 +189,52 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const CAMERAS = {
-  cam: {stream: '/camera.mjpg', missing: 'no frames — is the camera attached to WSL?'},
-  cam2: {stream: '/camera2.mjpg',
-         missing: 'no frames — is Telescope streaming? See [camera2_bridge] lines in the launch output'},
-};
-const cameraStreaming = {};
+let cameraStates = [];
+let nextCamera = 0;
+let loadingCameraFrame = null;
 
-function cameraStreamFailed(id) {
-  cameraStreaming[id] = false;
-  $(id).hidden = true;
+function renderCameras(cameras) {
+  if (cameraStates.length !== cameras.length) {
+    nextCamera = 0;
+    $('camerasCard').hidden = cameras.length === 0;
+    $('cameras').innerHTML = cameras.map((_, index) => {
+      const number = index + 1;
+      return `<div>
+        <h3>Camera ${number}</h3>
+        <p class="muted hint" id="cameraStatus_${number}"></p>
+        <img id="camera_${number}" class="camera" alt="Camera ${number}" hidden>
+      </div>`;
+    }).join('');
+  }
+  cameraStates = cameras;
+  cameras.forEach((camera, index) => {
+    const status = $('cameraStatus_' + (index + 1));
+    status.textContent = camera.available ? 'Live'
+      : camera.age_s == null ? 'Waiting for frames…'
+      : `Last frame ${camera.age_s.toFixed(1)} s ago`;
+    status.className = camera.available ? 'ok' : 'warn';
+  });
 }
 
-function renderCamera(id, camera) {
-  const ok = !!camera?.available;
-  const status = $(id + 'Status');
-  status.textContent = ok ? 'live'
-    : camera?.age_s == null ? CAMERAS[id].missing
-    : `no new frames for ${camera.age_s.toFixed(1)} s`;
-  status.className = ok ? 'ok' : 'warn';
-  if (ok && !cameraStreaming[id]) {
-    cameraStreaming[id] = true;
-    $(id).hidden = false;
-    $(id).src = CAMERAS[id].stream + '?t=' + Date.now();
+function loadNextCameraFrame() {
+  if (!connected || loadingCameraFrame) return;
+  for (let i = 0; i < cameraStates.length; i++) {
+    const index = nextCamera;
+    nextCamera = (nextCamera + 1) % cameraStates.length;
+    if (!cameraStates[index].available) continue;
+    const number = index + 1;
+    const image = $('camera_' + number);
+    loadingCameraFrame = image;
+    image.onload = () => {
+      image.hidden = false;
+      loadingCameraFrame = null;
+    };
+    image.onerror = () => {
+      image.hidden = true;
+      loadingCameraFrame = null;
+    };
+    image.src = '/camera_' + number + '.jpg?t=' + Date.now();
+    return;
   }
 }
 let config = {home_joints: [], max_jog_speed: 360};
@@ -732,6 +744,7 @@ async function poll() {
     if (sequence < appliedPoll) return;
     appliedPoll = sequence;
     connected = true;
+    const speedLimitChanged = config.max_jog_speed !== s.config.max_jog_speed;
     config = s.config;
     $('demoTarget').hidden = !config.demo_target_mm;
     $('demoTargetHint').textContent = config.scene_ready === false
@@ -740,8 +753,7 @@ async function poll() {
     latestJoints = s.joints;
     latestJointsAge = s.joints_age;
     latestJointsReceived = Date.now();
-    renderCamera('cam', s.camera);
-    renderCamera('cam2', s.camera2);
+    renderCameras(s.cameras || []);
     latestTcp = s.tcp;
     latestTcpError = s.tcp_error;
     latestTcpName = config.selected_tcp;
@@ -777,9 +789,9 @@ async function poll() {
     $('controllerTitle').textContent = config.simulation ? 'Simulation' : 'Bridge';
     $('unlock').hidden = !!config.simulation;
     $('endstopsCard').hidden = !!config.simulation;
-    jogDegrees = cachedDegrees($('speed'), jogDegrees);
     $('conn').textContent = 'connected'; $('conn').className = 'ok';
-    renderJointUnits();
+    if (speedLimitChanged) renderJointUnits();
+    else renderJointPositions();
     $('age').textContent = s.joints_age == null ? 'no joint_states yet'
       : `joint_states age ${s.joints_age.toFixed(2)} s`;
     $('tcpFrames').textContent = `${config.reference_frame} → ${config.selected_tcp} (${config.tcp_frame})`;
@@ -825,6 +837,8 @@ async function poll() {
 }
 setInterval(poll, 200);
 poll();
+// Leave HTTP connections available for Jog, planning and STOP.
+setInterval(loadNextCameraFrame, 70);
 
 // --- Gamepad: browser reads it (Windows driver) and forwards to ROS /joy ---
 let padActive = false;

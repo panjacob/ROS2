@@ -3,9 +3,7 @@
   ros2 launch arm_start arm.launch.py                       # joint simulator + web panel + RViz
   ros2 launch arm_start arm.launch.py use_hardware:=true    # real arm through NanoBee
   ros2 launch arm_start arm.launch.py simulator:=gazebo     # Gazebo table + banana
-  ros2 launch arm_start arm.launch.py camera:=false         # without the USB camera
-  ros2 launch arm_start arm.launch.py camera2:=false        # without the phone camera (Telescope)
-  ros2 launch arm_start arm.launch.py camera_width:=640 camera_height:=480  # native Linux host
+  ros2 launch arm_start arm.launch.py camera:=false         # without cameras
 
 Web page (state, cameras, jog, go-to, homing, gamepad) at http://localhost:8080 (web_port:=...).
 A gamepad controls the simple simulator and hardware (browser -> /joy -> joy_teleop -> /jog).
@@ -15,13 +13,19 @@ or, with use_hardware:=true, by the NanoBee bridge (planned at 0.1 speed scaling
 """
 
 import os
+import uuid
+
+import xacro
+import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import (DeclareLaunchArgument, ExecuteProcess, GroupAction,
-                            IncludeLaunchDescription, OpaqueFunction, RegisterEventHandler)
+from launch.actions import (DeclareLaunchArgument, EmitEvent, ExecuteProcess, GroupAction,
+                            IncludeLaunchDescription, LogInfo, OpaqueFunction,
+                            RegisterEventHandler, SetEnvironmentVariable)
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
@@ -30,9 +34,19 @@ from launch_ros.substitutions import FindPackagePrefix, FindPackageShare
 from moveit_configs_utils import MoveItConfigsBuilder
 
 
+def _on_gazebo_panel_exit(event, context):
+    if event.returncode == 0 or context.is_shutdown:
+        return []
+    port = LaunchConfiguration('web_port').perform(context)
+    return [EmitEvent(event=Shutdown(
+        reason=f'Gazebo web panel failed on port {port}. If the port is in use, '
+               'stop the previous launch or set web_port to a free port.'))]
+
+
 def _launch(context):
     use_hardware = LaunchConfiguration('use_hardware')
     gazebo = LaunchConfiguration('simulator').perform(context) == 'gazebo'
+    cameras_enabled = IfCondition(LaunchConfiguration('camera')).evaluate(context)
     if gazebo and use_hardware.perform(context) == 'true':
         raise ValueError('simulator:=gazebo cannot be combined with use_hardware:=true')
     use_rviz = LaunchConfiguration('rviz')
@@ -53,21 +67,44 @@ def _launch(context):
         [FindPackageShare('arm_start'), 'config', 'nanobee_bridge.yaml'])
     rviz_config = PathJoinSubstitution(
         [FindPackageShare('arm_description'), 'rviz', 'arm.rviz'])
-    xacro_command = ['xacro ', xacro_file]
+    robot_description = ParameterValue(Command(['xacro ', xacro_file]), value_type=str)
+    camera_count = 0
+    camera_actions = []
     gazebo_actions = []
     web_scene = {}
+    description_remappings = []
     if gazebo:
-        from arm_gazebo.scene import approach_target, load_scene
+        from arm_gazebo.scene import add_robot_cameras, approach_target, load_scene
         gazebo_share = get_package_share_directory('arm_gazebo')
         scene_path = (LaunchConfiguration('scene_config').perform(context) or
                       os.path.join(gazebo_share, 'config', 'scene.yaml'))
-        target = approach_target(load_scene(scene_path))
-        xacro_command += [' gazebo:=true gazebo_controllers:=',
-                          os.path.join(gazebo_share, 'config', 'controllers.yaml')]
+        scene = load_scene(scene_path)
+        target = approach_target(scene)
+        cameras = scene['cameras'] if cameras_enabled else []
+        camera_count = len(cameras)
+        # The embedded controller manager reads the URDF independently from Gazebo's spawn file.
+        # Give it this run's publisher so retained messages from other launches cannot reach it.
+        description_topic = f'/arm_gazebo/robot_description_{uuid.uuid4().hex}'
+        description_remappings = [('robot_description', description_topic)]
+        description = xacro.process_file(xacro_file.perform(context), mappings={
+            'gazebo': 'true',
+            'gazebo_controllers': os.path.join(gazebo_share, 'config', 'controllers.yaml'),
+            'gazebo_robot_description_topic': description_topic,
+        }).toxml()
+        description = add_robot_cameras(description, cameras)
+        robot_description = ParameterValue(description, value_type=str)
+        domain = LaunchConfiguration('gazebo_ros_domain_id')
+        gazebo_actions.extend([
+            SetEnvironmentVariable('ROS_DOMAIN_ID', domain),
+            LogInfo(msg=['Gazebo ROS domain: ', domain]),
+        ])
         gazebo_actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
                 gazebo_share, 'launch', 'simulation.launch.py')),
             launch_arguments={'scene_config': scene_path,
+                              'robot_description': description,
+                              'robot_description_topic': description_topic,
+                              'camera': LaunchConfiguration('camera'),
                               'gazebo_gui': LaunchConfiguration('gazebo_gui')}.items()))
         web_scene = {
             'direct_motion_available': False,
@@ -76,7 +113,15 @@ def _launch(context):
             'require_scene_ready': True,
             'demo_target_mm': [float(v * 1000) for v in target],
         }
-    robot_description = ParameterValue(Command(xacro_command), value_type=str)
+    elif cameras_enabled and IfCondition(use_hardware).evaluate(context):
+        config = LaunchConfiguration('usb_cameras_config').perform(context)
+        with open(config, encoding='utf-8') as stream:
+            devices = yaml.safe_load(stream)
+        if not isinstance(devices, list):
+            raise ValueError('USB camera configuration must be a list')
+        for number, spec in enumerate(devices, 1):
+            camera_actions.extend(_usb_camera(number, spec))
+        camera_count = len(devices)
     moveit_config = (
         MoveItConfigsBuilder('printed_arm_concept', package_name='arm_moveit_config')
         .robot_description(file_path=os.path.join(
@@ -116,61 +161,6 @@ def _launch(context):
         ],
     )
 
-    # Camera: attach the USB camera to WSL if needed; the node retries until frames arrive.
-    attach_camera = ExecuteProcess(
-        cmd=[PathJoinSubstitution(
-            [FindPackagePrefix('arm_start'), 'lib', 'arm_start', 'attach_board.sh']),
-            LaunchConfiguration('camera_device'), LaunchConfiguration('camera_usb_id')],
-        name='attach_camera',
-        output='screen',
-    )
-    camera_node = Node(
-        package='arm_camera',
-        executable='camera_node',
-        name='camera',
-        parameters=[{'device': LaunchConfiguration('camera_device'),
-                     'width': ParameterValue(LaunchConfiguration('camera_width'), value_type=int),
-                     'height': ParameterValue(LaunchConfiguration('camera_height'), value_type=int),
-                     'exposure': ParameterValue(
-                         LaunchConfiguration('camera_exposure'), value_type=int)}],
-        output='screen',
-    )
-    camera = GroupAction(
-        condition=IfCondition(LaunchConfiguration('camera')),
-        actions=[
-            attach_camera,
-            RegisterEventHandler(OnProcessExit(target_action=attach_camera, on_exit=[camera_node])),
-        ],
-    )
-
-    # Second camera: phone through Telescope. WSL can't open Windows webcams, so the bridge runs on
-    # Windows (WSL interop) and serves the camera as MJPEG; camera2 reads it and retries until it's up.
-    camera2_bridge = ExecuteProcess(
-        cmd=['bash', '-c',
-             'command -v py.exe >/dev/null || { echo "py.exe not found: needs WSL with Windows '
-             'Python (or camera2_bridge:=false and start the bridge yourself)"; exit 1; }; '
-             'exec py.exe "$(wslpath -w "$(realpath "$0")")" --camera "$1"',
-             PathJoinSubstitution(
-                 [FindPackageShare('arm_camera'), 'windows', 'windows_camera_bridge.py']),
-             LaunchConfiguration('camera2_name')],
-        name='camera2_bridge',
-        output='screen',
-        condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('camera2'), "' == 'true' and '",
-            LaunchConfiguration('camera2_bridge'), "' == 'true'"])),
-    )
-    camera2_node = Node(
-        package='arm_camera',
-        executable='camera_node',
-        name='camera2',
-        parameters=[{'device': LaunchConfiguration('camera2_device'),
-                     'frame_id': 'camera2_link'}],
-        remappings=[('camera/image_raw', 'camera2/image_raw'),
-                    ('camera/image_raw/compressed', 'camera2/image_raw/compressed')],
-        condition=IfCondition(LaunchConfiguration('camera2')),
-        output='screen',
-    )
-
     return [
         *gazebo_actions,
         Node(
@@ -188,6 +178,7 @@ def _launch(context):
         Node(
             package='robot_state_publisher',
             executable='robot_state_publisher',
+            remappings=description_remappings,
             parameters=[{'robot_description': robot_description, 'use_sim_time': gazebo}],
         ),
         Node(
@@ -202,10 +193,12 @@ def _launch(context):
             package='arm_web',
             executable='web_viewer',
             name='web_viewer',
+            on_exit=_on_gazebo_panel_exit if gazebo else None,
             parameters=[{
                 'port': ParameterValue(web_port, value_type=int),
                 'bridge_ns': controller_ns,
                 'simulation': ParameterValue(simulation, value_type=bool),
+                'camera_count': camera_count,
                 'tcp_storage_path': tcp_storage_path,
                 'robot_description': robot_description,
                 'max_velocity_scaling': ParameterValue(plan_scaling, value_type=float),
@@ -224,9 +217,7 @@ def _launch(context):
             output='screen',
         ),
         hardware,
-        camera,
-        camera2_bridge,
-        camera2_node,
+        *camera_actions,
         Node(
             package='rviz2',
             executable='rviz2',
@@ -239,12 +230,37 @@ def _launch(context):
     ]
 
 
+def _usb_camera(number, spec):
+    device = spec.get('device') if isinstance(spec, dict) else None
+    if not isinstance(device, str) or not device.startswith('/dev/'):
+        raise ValueError(f'camera {number} needs a device path under /dev/')
+    parameters = {'device': device}
+    for key in ('width', 'height', 'fps', 'fourcc', 'exposure'):
+        if key in spec:
+            parameters[key] = spec[key]
+    node = Node(package='arm_camera', executable='camera_node', name=f'camera_{number}',
+                parameters=[parameters],
+                remappings=[('image_raw', f'/camera_{number}/image_raw'),
+                            ('image_raw/compressed', f'/camera_{number}/image_raw/compressed')],
+                output='screen')
+    if not spec.get('usb_id'):
+        return [node]
+    attach = ExecuteProcess(
+        cmd=[PathJoinSubstitution(
+            [FindPackagePrefix('arm_start'), 'lib', 'arm_start', 'attach_board.sh']),
+            device, spec['usb_id']],
+        name=f'attach_camera_{number}', output='screen')
+    return [RegisterEventHandler(OnProcessExit(target_action=attach, on_exit=[node])), attach]
+
+
 def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('use_hardware', default_value='false', choices=['true', 'false'],
                               description='Connect to the NanoBee board instead of simulation'),
         DeclareLaunchArgument('simulator', default_value='simple', choices=['simple', 'gazebo']),
         DeclareLaunchArgument('gazebo_gui', default_value='true', choices=['true', 'false']),
+        DeclareLaunchArgument('gazebo_ros_domain_id', default_value='42',
+                              description='ROS domain used by the Gazebo session'),
         DeclareLaunchArgument('scene_config', default_value='',
                               description='Gazebo scene YAML; empty uses the tabletop demo'),
         DeclareLaunchArgument('rviz', default_value='true'),
@@ -252,30 +268,10 @@ def generate_launch_description():
                               description='Xacro model from arm_description/urdf'),
         DeclareLaunchArgument('web_port', default_value='8080'),
         DeclareLaunchArgument('tcp_storage_path', default_value='~/.config/ros2_arm/tcps.json'),
-        DeclareLaunchArgument('camera', default_value='true',
-                              description='Start the USB camera (camera/image_raw[/compressed])'),
-        DeclareLaunchArgument('camera_device',
-                              default_value='/dev/v4l/by-id/usb-045e_USB20_Camera-video-index0',
-                              description='V4L2 device of the camera'),
-        DeclareLaunchArgument('camera_usb_id', default_value='045e:00f4',
-                              description='USB vid:pid attached to WSL with usbipd'),
-        DeclareLaunchArgument('camera_width', default_value='320',
-                              description='Camera width: 160, 320 or 640 '
-                                          '(640x480 is unreliable over usbipd/WSL)'),
-        DeclareLaunchArgument('camera_height', default_value='240',
-                              description='Camera height: 120, 240 or 480'),
-        DeclareLaunchArgument('camera_exposure', default_value='1000',
-                              description='Camera exposure 0..6016 (lower = more fps, darker); '
-                                          '-1 = auto (slow in dim light)'),
-        DeclareLaunchArgument('camera2', default_value='true',
-                              description='Start the phone camera (camera2/image_raw[/compressed])'),
-        DeclareLaunchArgument('camera2_bridge', default_value='true',
-                              description='Start windows_camera_bridge.py on Windows (WSL interop)'),
-        DeclareLaunchArgument('camera2_name', default_value='Telescope',
-                              description='Windows camera the bridge reads (name or its start)'),
-        DeclareLaunchArgument('camera2_device',
-                              default_value='http://{windows_host}:8081/stream.mjpg',
-                              description='Stream URL of the phone camera (windows_camera_bridge.py); '
-                                          '{windows_host} = Windows as seen from WSL'),
+        DeclareLaunchArgument('camera', default_value='true', choices=['true', 'false'],
+                              description='Enable cameras for the selected backend'),
+        DeclareLaunchArgument('usb_cameras_config', default_value=PathJoinSubstitution(
+            [FindPackageShare('arm_start'), 'config', 'usb_cameras.yaml']),
+            description='YAML list of camera devices for the physical arm'),
         OpaqueFunction(function=_launch),
     ])

@@ -199,6 +199,10 @@ def test_position_plan_uses_collision_planner_and_verified_fk(viewer, name):
     request = viewer._plan_client.requests[-1]
     assert request.planning_options.plan_only
     assert request.request.pipeline_id == 'ompl'
+    start = request.request.start_state.joint_state
+    snapshot = viewer.store.snapshot()['joints']
+    assert dict(zip(start.name, start.position)) == {
+        name: point['position_rad'] for name, point in snapshot.items()}
     assert 2 <= len(request.request.goal_constraints) <= 24
     assert all(len(c.joint_constraints) == 5 for c in request.request.goal_constraints)
     assert all(not c.orientation_constraints for c in request.request.goal_constraints)

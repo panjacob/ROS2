@@ -13,6 +13,8 @@ gazebo_arm_controller:
     command_interfaces: [position]
     state_interfaces: [position, velocity]
     allow_partial_joints_goal: false
+    # Jog and STOP send short segments that replace the previous command immediately.
+    allow_trajectory_replacement: false
     constraints:
       goal_time: 2.0
       stopped_velocity_tolerance: 0.05

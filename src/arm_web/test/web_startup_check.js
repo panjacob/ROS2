@@ -47,6 +47,7 @@ const state = {
   },
   joints: {}, joints_age: null, tcp: null, tcp_error: 'Waiting for TF', status: {},
   plan: {state: 'none', message: 'No plan yet.'},
+  cameras: Array.from({length: 8}, () => ({available: false, age_s: null})),
 };
 let unavailable = false;
 const requests = [];
@@ -73,9 +74,15 @@ async function main() {
   assert.ok(element('target_joint1'));
   assert.equal(element('jogPlus_joint1').disabled, true);
   assert.equal(element('planButton').disabled, true);
+  assert.equal(element('camerasCard').hidden, false);
+  assert.match(element('cameras').innerHTML, /<h3>Camera 8<\/h3>/);
+  assert.equal(element('camera_9'), null);
+  assert.match(element('cameraStatus_1').textContent, /Waiting for frames/);
   assert.equal(requests.length, 0);
 
   state.config.scene_ready = true;
+  state.cameras[0] = {available: true, age_s: 0};
+  state.cameras[7] = {available: true, age_s: 0};
   state.joints = Object.fromEntries(Object.keys(state.config.joint_limits_deg)
     .map(name => [name, {position_deg: 0, position_rad: 0, velocity: 0}]));
   state.joints_age = 0;
@@ -85,6 +92,19 @@ async function main() {
   assert.equal(element('conn').textContent, 'connected');
   assert.equal(element('jogPlus_joint1').disabled, false);
   assert.equal(element('tcpPlanButton').disabled, false);
+  assert.equal(element('cameraStatus_1').textContent, 'Live');
+  run('loadNextCameraFrame(); loadNextCameraFrame()');
+  assert.equal(element('camera_8').src, undefined);
+  element('camera_1').onload();
+  assert.equal(element('camera_1').hidden, false);
+  assert.match(element('camera_1').src, /^\/camera_1\.jpg\?/);
+  run('loadNextCameraFrame()');
+  assert.match(element('camera_8').src, /^\/camera_8\.jpg\?/);
+  element('camera_8').onload();
+  state.cameras = [];
+  await run('poll()');
+  assert.equal(element('camerasCard').hidden, true);
+  assert.equal(element('camera_1'), null);
   assert.equal(element('directButton').disabled, true);
   assert.equal(Number(element('speed').max), 120);
 

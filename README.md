@@ -25,7 +25,7 @@ NanoBee status reports.
 | [src/arm_gazebo](src/arm_gazebo) | Gazebo physics backend, table/banana world and matching MoveIt collision scene |
 | [src/arm_web](src/arm_web) | Web page: live state, camera streams, joint/TCP planning and execution, jog, go-to, TCPs, gamepad |
 | [src/arm_teleop](src/arm_teleop) | Gamepad (`/joy`) → joint jog |
-| [src/arm_camera](src/arm_camera) | USB camera → `/camera/image_raw`, phone camera (Telescope via [windows_camera_bridge.py](src/arm_camera/windows/windows_camera_bridge.py), started by the launch) → `/camera2/image_raw` (+ `/compressed`) |
+| [src/arm_camera](src/arm_camera) | Configured USB cameras publish numbered ROS image streams on `/camera_N/image_raw` (+ `/compressed`) |
 | [NanoBee](NanoBee) | NanoBee firmware for the TinyBee (PlatformIO), [NanoBeeDriver](NanoBee/NanoBeeDriver) Python driver and board settings [config.yaml](NanoBee/NanoBeeDriver/config.yaml) (steps/deg, speeds, homing, soft limits) |
 | [docs](docs) | Step-by-step development guides |
 | [hardware](hardware) | CAD sources, printable parts and hardware notes |

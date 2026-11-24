@@ -72,11 +72,15 @@ class MotionBridge:
 
     def _publish(self, positions, hold=False):
         trajectory = JointTrajectory(joint_names=self.jog.names)
-        point = JointTrajectoryPoint(positions=positions)
-        point.time_from_start.nanosec = int((0.05 if hold else self.jog.horizon) * 1e9)
         if hold:
-            point.velocities = [0.0] * len(positions)
-        trajectory.points = [point]
+            trajectory.points = [JointTrajectoryPoint(
+                positions=positions, velocities=[0.0] * len(positions))]
+        else:
+            # Anchor each replacement segment to measured state. Interpolating
+            # from the previous desired point can add a step to a jog command.
+            target = JointTrajectoryPoint(positions=positions)
+            target.time_from_start.nanosec = int(self.jog.horizon * 1e9)
+            trajectory.points = [JointTrajectoryPoint(positions=self.jog.positions), target]
         # A zero header timestamp starts the bounded segment on receipt in sim time.
         self.publisher.publish(trajectory)
 

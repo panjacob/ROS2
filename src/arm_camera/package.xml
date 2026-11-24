@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>arm_camera</name>
+  <version>0.1.0</version>
+  <description>Publish USB camera images for the robotic arm.</description>
+  <maintainer email="you@example.com">TODO</maintainer>
+  <license>MIT</license>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

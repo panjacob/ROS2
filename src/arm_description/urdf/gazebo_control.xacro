@@ -2,6 +2,7 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
   <xacro:arg name="gazebo" default="false"/>
   <xacro:arg name="gazebo_controllers" default=""/>
+  <xacro:arg name="gazebo_robot_description_topic" default="/robot_description"/>
   <xacro:arg name="gazebo_max_velocity" default="2.0943951023931953"/>
   <!-- The faster simulation limit is independent of the physical arm limits. -->
   <xacro:macro name="arm_joint_limit" params="lower upper velocity">
@@ -31,6 +32,10 @@
     <gazebo>
       <plugin filename="libgz_ros2_control-system.so" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
         <parameters>$(arg gazebo_controllers)</parameters>
+        <position_proportional_gain>0.5</position_proportional_gain>
+        <ros>
+          <remapping>/robot_description:=$(arg gazebo_robot_description_topic)</remapping>
+        </ros>
       </plugin>
     </gazebo>
   </xacro:if>

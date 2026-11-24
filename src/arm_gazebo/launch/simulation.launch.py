@@ -24,7 +24,17 @@ def _start(context):
     scene_path = LaunchConfiguration('scene_config').perform(context)
     scene = load_scene(scene_path)
     temporary = Path(tempfile.mkdtemp(prefix='arm-gazebo-'))
-    world = write_world(scene, temporary / 'tabletop.sdf')
+    camera = IfCondition(LaunchConfiguration('camera')).evaluate(context)
+    cameras = scene['cameras'] if camera else []
+    world = write_world(scene, temporary / 'tabletop.sdf', camera=camera)
+    description = LaunchConfiguration('robot_description', default='').perform(context)
+    description_topic = LaunchConfiguration('robot_description_topic', default='robot_description')
+    model_source = ['-topic', 'robot_description']
+    if description:
+        # Spawn this launch's model even if another ROS node publishes robot_description.
+        model = temporary / 'arm.urdf'
+        model.write_text(description, encoding='utf-8')
+        model_source = ['-file', str(model)]
     partition = 'arm_gazebo_' + uuid.uuid4().hex
     # Run server and GUI directly, so launch owns and signals both processes.
     # The combined shell launcher can leave a server behind after startup fails.
@@ -35,8 +45,9 @@ def _start(context):
         'GZ_SIM_SYSTEM_PLUGIN_PATH': os.pathsep.join(filter(None, [
             os.environ.get('GZ_SIM_SYSTEM_PLUGIN_PATH'), os.environ.get('LD_LIBRARY_PATH')])),
     }
+    render_args = ['--headless-rendering'] if cameras and not context.environment.get('DISPLAY') else []
     server = ExecuteProcess(
-        cmd=[FindExecutable(name='gz'), 'sim', '-s', '-r', str(world)],
+        cmd=[FindExecutable(name='gz'), 'sim', '-s', '-r', *render_args, str(world)],
         name='gazebo_server', output='screen', additional_env=environment,
         on_exit=[EmitEvent(event=Shutdown(reason='Gazebo server exited'))])
     gui = ExecuteProcess(
@@ -46,7 +57,7 @@ def _start(context):
         on_exit=[EmitEvent(event=Shutdown(reason='Gazebo window closed'))])
     spawn = Node(
         package='ros_gz_sim', executable='create', output='screen',
-        arguments=['-world', 'tabletop', '-name', 'arm', '-topic', 'robot_description',
+        arguments=['-world', 'tabletop', '-name', 'arm', *model_source,
                    '-allow_renaming', 'false'],
     )
     controllers = Node(
@@ -69,7 +80,14 @@ def _start(context):
             return [EmitEvent(event=Shutdown(reason='Cannot activate Gazebo controllers'))]
         return [Node(
             package='arm_gazebo', executable='scene_manager', name='arm_gazebo',
+            remappings=[('robot_description', description_topic)],
             parameters=[{'scene_config': scene_path, 'use_sim_time': True}], output='screen')]
+
+    image_bridge = []
+    if cameras:
+        image_bridge.append(Node(package='ros_gz_image', executable='image_bridge',
+                                 arguments=[f'/camera_{i}/image_raw' for i in range(1, len(cameras) + 1)],
+                                 parameters=[{'use_sim_time': True}], output='screen'))
 
     return [
         SetEnvironmentVariable('GZ_PARTITION', partition),
@@ -80,6 +98,7 @@ def _start(context):
         RegisterEventHandler(OnProcessExit(target_action=controllers, on_exit=after_controllers)),
         server,
         gui,
+        *image_bridge,
         Node(package='ros_gz_bridge', executable='parameter_bridge',
              arguments=['/world/tabletop/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock'],
              remappings=[('/world/tabletop/clock', '/clock')],
@@ -92,6 +111,11 @@ def generate_launch_description():
     share = Path(get_package_share_directory('arm_gazebo'))
     return LaunchDescription([
         DeclareLaunchArgument('gazebo_gui', default_value='true', choices=['true', 'false']),
+        DeclareLaunchArgument('camera', default_value='true'),
         DeclareLaunchArgument('scene_config', default_value=str(share / 'config/scene.yaml')),
+        DeclareLaunchArgument('robot_description', default_value='',
+                              description='URDF to spawn; empty reads the robot_description topic'),
+        DeclareLaunchArgument('robot_description_topic', default_value='robot_description',
+                              description='Topic used by Gazebo motion to read the URDF'),
         OpaqueFunction(function=_start),
     ])

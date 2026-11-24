@@ -36,8 +36,10 @@ def test_spawner_passes_joint_configuration_to_controller(monkeypatch, tmp_path)
 
     monkeypatch.setattr(launch, 'ExecuteProcess', record_process)
     context = LaunchContext()
+    description = '<robot name="this_launch"><link name="base_link"/></robot>'
     context.launch_configurations.update(
-        scene_config=str(package / 'config/scene.yaml'), gazebo_gui='false')
+        scene_config=str(package / 'config/scene.yaml'), gazebo_gui='false', camera='true',
+        robot_description=description)
     actions = launch._start(context)
     # Avoid the combined shell parent which survived shutdown in desktop logs.
     assert processes[0]['cmd'][1:4] == ['sim', '-s', '-r']
@@ -48,9 +50,19 @@ def test_spawner_passes_joint_configuration_to_controller(monkeypatch, tmp_path)
     assert partition.startswith('arm_gazebo_')
     launch._start(context)[0].execute(context)
     assert context.environment['GZ_PARTITION'] != partition
+    spawn = next(node for node in nodes if node['package'] == 'ros_gz_sim')
+    assert '-topic' not in spawn['arguments']
+    source = spawn['arguments'][spawn['arguments'].index('-file') + 1]
+    assert Path(source).read_text() == description
     bridge = next(node for node in nodes if node['package'] == 'ros_gz_bridge')
     assert bridge['arguments'] == ['/world/tabletop/clock@rosgraph_msgs/msg/Clock[gz.msgs.Clock']
     assert bridge['remappings'] == [('/world/tabletop/clock', '/clock')]
+    image_bridge = next(node for node in nodes if node['package'] == 'ros_gz_image')
+    assert image_bridge['arguments'] == [f'/camera_{number}/image_raw' for number in range(1, 4)]
+    context.launch_configurations['camera'] = 'false'
+    nodes.clear()
+    launch._start(context)
+    assert all(node['package'] != 'ros_gz_image' for node in nodes)
     spawner = next(node for node in nodes if node['package'] == 'controller_manager')
     # A use_sim_time-only Node parameter file was forwarded by Lyrical's spawner
     # and replaced the plugin's controller params_file, dropping the joint list.

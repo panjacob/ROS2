@@ -8,9 +8,7 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
-if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/config")
-  install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
-endif()
+install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
 
 install(
   PROGRAMS scripts/attach_board.sh

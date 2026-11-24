@@ -11,7 +11,7 @@
 | `arm_web` | ament_python | `web_viewer` node: web page (default http://localhost:8080) with live state, STOP/unlock, hold-to-jog, go-to, endstop homing and browser gamepad forwarding |
 | `arm_gazebo` | ament_python | Gazebo tabletop simulation, trajectory adapter, and matching MoveIt collision scene |
 | `arm_teleop` | ament_python | `joy_teleop` node: `/joy` → `/jog` velocities in simple simulation and on hardware |
-| `arm_camera` | ament_python | `camera_node`: USB camera (OpenCV/V4L2) → `/camera/image_raw` (bgr8) and `/camera/image_raw/compressed` (JPEG); started unless `camera:=false`. A second instance `camera2` reads the phone camera from a stream URL (`camera2_device`, default `http://{windows_host}:8081/stream.mjpg`) → `/camera2/image_raw[/compressed]` (`camera2_link`); started unless `camera2:=false` |
+| `arm_camera` | ament_python | One OpenCV/V4L2 node per configured USB camera. Publishes `/camera_N/image_raw` and its JPEG `/compressed` topic. |
 | `arm_moveit_config` | ament_cmake | SRDF arm group, self-collision exclusions and OMPL planning configuration |
 
 Planned:
@@ -195,11 +195,7 @@ http://localhost:8080 (from Windows too).
   The selected tool's saved offset is included in the goal. Orientation is free for
   this 5-DOF arm; this is collision-planned motion, not a guaranteed straight TCP path.
   The saved TCP definition does not add a tool collision body to the robot model.
-- Cameras card: live MJPEG streams (`GET /camera.mjpg`, snapshot `GET /camera.jpg`) of
-  `/camera/image_raw/compressed` (`camera_topic` parameter) and of the phone camera
-  (`GET /camera2.mjpg`, `GET /camera2.jpg`, `camera2_topic`). See
-  [2.4.1](02-dev-environment.md#241-usb-camera-microsoft-lifecam-vx-6000) and
-  [2.4.2](02-dev-environment.md#242-phone-camera-telescope) for camera setup in WSL.
+- Cameras follow the configured input list and are labelled **Camera 1**, **Camera 2**, and so on. See [USB camera setup](02-dev-environment.md#241-usb-cameras) and [Gazebo camera setup](09-gazebo.md#camera-in-the-web-panel).
 - Gamepad: the browser reads it (Gamepad API, so Windows drivers work – WSL has no gamepad driver)
   and POSTs it to `/api/joy` → `/joy` → `joy_teleop` → `/jog`. Always on when a pad is connected
   (a real pad with the standard layout is preferred over virtual ones like vJoy),
@@ -214,7 +210,7 @@ HTTP API (JSON body, `Content-Type: application/json` required): `/api/jog` `{"j
 `/api/execute` `{"plan_id": "..."}`,
 `/api/home` `{"joint": "joint1"}`, `/api/stop`, `/api/unlock`,
 `/api/joy` `{"axes": [...], "buttons": [...]}`; `GET /state` returns everything shown on the page;
-`GET /camera.mjpg` / `GET /camera.jpg` serve the USB camera, `GET /camera2.mjpg` / `GET /camera2.jpg` the phone camera.
+`GET /camera_N.mjpg` streams camera N and `GET /camera_N.jpg` returns its latest JPEG. Camera numbers start at 1.
 
 ## 6.4 MoveIt 2 joint and TCP position planning
 

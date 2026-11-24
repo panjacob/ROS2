@@ -88,6 +88,17 @@ def test_stop_flushes_jog_even_without_an_action_goal(bridge):
     assert bridge.jog.blocked
     assert list(bridge.published[-1].points[0].positions) == [0., 0.]
     assert list(bridge.published[-1].points[0].velocities) == [0., 0.]
+    assert bridge.published[-1].points[0].time_from_start.nanosec == 0
+
+
+def test_replacement_jog_starts_at_measured_state(bridge):
+    bridge.jog.update(bridge.jog.names, [.1, -.2], 0.)
+    bridge._publish([.12, -.2])
+    start, end = bridge.published[-1].points
+    assert list(start.positions) == [.1, -.2]
+    assert start.time_from_start.nanosec == 0
+    assert list(end.positions) == [.12, -.2]
+    assert end.time_from_start.nanosec == 120_000_000
 
 
 @pytest.mark.parametrize('code,status,outcome', [

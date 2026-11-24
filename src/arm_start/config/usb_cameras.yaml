@@ -1,0 +1,7 @@
+# One entry per USB camera, in panel order. Prefer /dev/v4l/by-id/ paths.
+- device: /dev/v4l/by-id/usb-045e_USB20_Camera-video-index0
+  usb_id: "045e:00f4"
+  width: 320
+  height: 240
+  fourcc: JPEG
+  exposure: 1000

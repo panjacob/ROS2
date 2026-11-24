@@ -1,6 +1,7 @@
 """Verify the physical and planning worlds use identical geometry."""
 
 from pathlib import Path
+import math
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -52,6 +53,22 @@ def test_approach_has_ten_centimetres_clearance():
     assert target[2] - top == pytest.approx(0.10)
     assert target[:2] == pytest.approx([0.28, 0.035])
     assert scene['table']['center'][2] + scene['table']['size'][2]/2 == 0
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+def test_table_camera(tmp_path, enabled):
+    scene = load_scene(CONFIG)
+    world = ET.parse(write_world(scene, tmp_path / 'world.sdf', camera=enabled))
+    sensors = {sensor.findtext('topic'): sensor for sensor in
+               world.findall(".//model[@name='table']/link/sensor[@type='camera']")}
+    renderer = world.find(".//world/plugin[@name='gz::sim::systems::Sensors']")
+    assert (renderer is not None) == enabled
+    assert set(sensors) == ({'/camera_2/image_raw', '/camera_3/image_raw'} if enabled else set())
+    if enabled:
+        assert all(s.findtext('camera/image/format') == 'R8G8B8' for s in sensors.values())
+        pose = list(map(float, sensors['/camera_3/image_raw'].findtext('pose').split()))
+        assert pose[:2] == pytest.approx(scene['table']['center'][:2])
+        assert pose[2:] == pytest.approx([1.15, 0, math.pi/2, math.pi/2])
 
 
 def test_mount_contact_preserves_self_collision_rules():

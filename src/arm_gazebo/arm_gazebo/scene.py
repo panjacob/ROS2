@@ -27,6 +27,19 @@ def load_scene(path):
     segments = scene['banana']['segments']
     if not isinstance(segments, int) or not 5 <= segments <= 100:
         raise ValueError('banana.segments must be an integer from 5 to 100')
+    cameras = scene.setdefault('cameras', [])
+    if not isinstance(cameras, list):
+        raise ValueError('cameras must be a list')
+    for number, camera in enumerate(cameras, 1):
+        if not isinstance(camera, dict) or not isinstance(camera.get('parent'), str) or not camera['parent']:
+            raise ValueError(f'camera {number} needs a parent (world or a robot link)')
+        pose = camera.get('pose')
+        if (not isinstance(pose, list) or len(pose) != 6
+                or not all(isinstance(v, (float, int)) and math.isfinite(v) for v in pose)):
+            raise ValueError(f'camera {number} pose must contain six finite numbers')
+        near = camera.get('near', 0.05)
+        if not isinstance(near, (float, int)) or not 0 < near < 10:
+            raise ValueError(f'camera {number} near must be between 0 and 10 m')
     return scene
 
 
@@ -72,7 +85,7 @@ def _element(parent, tag, text=None, **attributes):
     return child
 
 
-def write_world(scene, destination):
+def write_world(scene, destination, *, camera=True):
     """Build a self-contained SDF world, including the banana's visual geometry."""
     destination = Path(destination)
     sdf = ET.Element('sdf', version='1.9')
@@ -113,6 +126,14 @@ def write_world(scene, destination):
                 material = _element(shape, 'material')
                 _element(material, 'ambient', colors[name])
                 _element(material, 'diffuse', colors[name])
+    if camera and scene.get('cameras'):
+        plugin = _element(world, 'plugin', filename='gz-sim-sensors-system',
+                          name='gz::sim::systems::Sensors')
+        _element(plugin, 'render_engine', 'ogre2')
+        # The table body is static at the world origin.
+        for number, spec in enumerate(scene['cameras'], 1):
+            if spec['parent'] == 'world':
+                _add_camera(links['table'], number, spec)
     # Join the tapered spheres with cylinders: a curved banana without external
     # mesh files, loader-specific materials or resources removed during shutdown.
     sections = list(banana_sections(scene))
@@ -131,6 +152,35 @@ def write_world(scene, destination):
     ET.indent(sdf)
     ET.ElementTree(sdf).write(destination, encoding='unicode', xml_declaration=True)
     return destination
+
+
+def add_robot_cameras(description, cameras):
+    robot = ET.fromstring(description)
+    links = {link.get('name') for link in robot.findall('link')}
+    for number, spec in enumerate(cameras, 1):
+        parent = spec['parent']
+        if parent != 'world':
+            if parent not in links:
+                raise ValueError(f'camera {number} references unknown robot link {parent!r}')
+            _add_camera(_element(robot, 'gazebo', reference=parent), number, spec)
+    return ET.tostring(robot, encoding='unicode')
+
+
+def _add_camera(parent, number, spec):
+    sensor = _element(parent, 'sensor', name=f'camera_{number}', type='camera')
+    _element(sensor, 'pose', ' '.join(map(str, spec['pose'])))
+    _element(sensor, 'topic', f'/camera_{number}/image_raw')
+    _element(sensor, 'always_on', 'true')
+    _element(sensor, 'update_rate', 15)
+    camera = _element(sensor, 'camera')
+    _element(camera, 'horizontal_fov', 1.05)
+    image = _element(camera, 'image')
+    _element(image, 'width', 640)
+    _element(image, 'height', 480)
+    _element(image, 'format', 'R8G8B8')
+    clip = _element(camera, 'clip')
+    _element(clip, 'near', spec.get('near', 0.05))
+    _element(clip, 'far', 10)
 
 
 def _add_gui(world):

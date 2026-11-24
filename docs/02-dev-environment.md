@@ -142,67 +142,34 @@ NanoBeeDriver). Detach with `usbipd detach --busid 2-3`.
 > terminals may toggle DTR and **reboot the board** (position and home reference are lost);
 > the bridge then disarms trajectory execution and re-reads the settings.
 
-### 2.4.1 USB camera (Microsoft LifeCam VX-6000)
+### 2.4.1 USB cameras
 
-The camera (`045e:00f4`, Sonix SN9C20x + OV9650) has no driver in Windows 11 nor in Microsoft's
-WSL kernel, so it is used from WSL with an out-of-tree `gspca_sn9c20x` module:
+Configure one entry per camera in `src/arm_start/config/usb_cameras.yaml`.
+The order determines **Camera 1**, **Camera 2**, and the corresponding ROS topics
+`/camera_1/image_raw`, `/camera_2/image_raw`, and so on. Each entry requires a
+V4L2 `device` path. Prefer paths under `/dev/v4l/by-id/` when available.
 
-```powershell
-usbipd bind --hardware-id 045e:00f4          # once, PowerShell as admin
+```yaml
+- device: /dev/video0
+  width: 640
+  height: 480
+  fps: 15
+- device: /dev/video2
 ```
 
 ```bash
-tools/wsl_camera_driver.sh                   # once, and again after every WSL kernel update
+ros2 launch arm_start arm.launch.py use_hardware:=true usb_cameras_config:=/absolute/path/usb_cameras.yaml
 ```
 
-`arm.launch.py` then attaches the camera automatically (same `attach_board.sh`) and starts
-`arm_camera` (`camera:=false` to disable). The image is on the web page and on `/camera/image_raw`.
+The optional settings are `width`, `height`, `fps`, `fourcc` and `exposure`.
+The supplied configuration is for the LifeCam VX-6000 at 320 × 240 and selects
+its JPEG mode for WSL. If a camera needs to be attached through usbipd, set its
+`usb_id` (for example `"045e:00f4"`) or attach it manually before launch. WSL
+needs a kernel with support for the USB camera. Use `v4l2-ctl --list-devices`
+to check the paths visible to Linux.
 
-- Over usbipd only the camera's JPEG mode delivers complete frames (the node forces `fourcc: JPEG`),
-  and only 320×240 streams reliably (steady ~17 fps); 640×480 stalls or stutters, so 320×240 is the
-  default. Change it with `camera_width:=640 camera_height:=480` (fine on a native Linux host, where
-  `gspca_sn9c20x` ships with the stock kernel and no attach/driver build is needed).
-- The leftover Windows LifeCam files (`C:\Windows\vVX6000.exe` = tray app, `VX6000Xp.sys`) are not a
-  usable driver: no INF, missing `VX6KCamd.sys`, and an XP-era stream-class driver that Windows 11
-  blocks while Memory Integrity is on. Capturing on Windows is therefore not an option for this camera.
-- Auto exposure drops to ~3 fps in a dim room, so exposure is fixed: `camera_exposure:=1000`
-  (≈17 fps). Lower = faster but darker (300 ≈ 28 fps); `-1` = auto. Add light rather than exposure.
-- Check: `v4l2-ctl --list-devices`, `ros2 topic hz /camera/image_raw`.
-
-### 2.4.2 Phone camera (Telescope)
-
-The phone is the second camera, through [Telescope](https://github.com/LunarKittyy/Telescope)
-(phone app + Windows desktop app, used unmodified). WSL can't open Windows webcams, so
-`arm.launch.py` starts a small bridge on Windows (WSL interop, `py.exe`) that reads Telescope's
-virtual camera with ffmpeg and serves it as MJPEG; the `camera2` node in WSL reads that stream.
-
-1. In Telescope on Windows: pair the phone, set up the virtual camera and press Start.
-2. Windows needs Python 3 (`py.exe`) and `ffmpeg` on PATH. Then just `ros2 launch arm_start arm.launch.py`;
-   the bridge stops with the launch. Its log lines start with `[camera2_bridge]`.
-
-   Arguments: `camera2:=false` (no phone camera), `camera2_name:=<Windows camera name or its start>`
-   (default `Telescope`), `camera2_bridge:=false` (start the bridge yourself). By hand, in
-   PowerShell from the repository folder:
-
-   ```powershell
-   py src\arm_camera\windows\windows_camera_bridge.py --list    # camera names: expect "Telescope (...)"
-   py src\arm_camera\windows\windows_camera_bridge.py --width 1280 --fps 30
-   ```
-
-   Defaults: 640 px wide, 15 fps, port 8081; also `--quality 2..31`, `--camera`.
-   It listens only on Windows' WSL adapter (not the LAN, there is no login). With
-   `networkingMode=mirrored` use `--host 127.0.0.1` and
-   `camera2_device:=http://127.0.0.1:8081/stream.mjpg`.
-3. `{windows_host}` in `camera2_device` becomes the WSL default gateway (= Windows). Image on the
-   web page and on `/camera2/image_raw` (`frame_id` `camera2_link`).
-
-- `camera2 ... not available, retrying` / `Connection timed out`: the bridge isn't running
-  (look for `[camera2_bridge]` errors) or the firewall blocks it. Test from WSL with
-  `curl http://$(ip route show default | cut -d' ' -f3):8081/frame.jpg`; if it times out while the
-  bridge runs, allow the port on the WSL adapter once (PowerShell as admin):
-  `New-NetFirewallRule -DisplayName "ROS2 camera bridge (WSL)" -Direction Inbound -Protocol TCP -LocalPort 8081 -InterfaceAlias "vEthernet (WSL (Hyper-V firewall))" -Action Allow`
-- Exposure, focus and lens are set in Telescope; `camera_exposure` etc. only apply to the USB camera.
-- Check: `ros2 topic hz /camera2/image_raw` (≈ the bridge's `--fps`).
+Use `[]` in the configuration for zero USB cameras, or launch with `camera:=false`.
+For simulated cameras use the Gazebo scene configuration. See [Gazebo cameras](09-gazebo.md#camera-in-the-web-panel).
 
 ## 2.5 Useful tools
 

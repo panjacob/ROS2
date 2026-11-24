@@ -33,6 +33,29 @@ ros2 launch arm_start arm.launch.py simulator:=gazebo gazebo_gui:=false rviz:=fa
 arm model. `use_hardware:=true` and `simulator:=gazebo` are rejected together.
 Do not run another arm backend in the same ROS domain at the same time.
 
+If the panel cannot open port 8080, stop the previous launch or use a free port
+such as `web_port:=8082`. Open the address shown in the `Web viewer at` log line.
+
+## Camera in the web panel
+
+The **Cameras** section follows the order of the `cameras` list in
+`src/arm_gazebo/config/scene.yaml`. The default scene has three RGB cameras at
+640 × 480 and 15 frames per simulated second.
+
+| Panel | Default view | Raw ROS topic |
+| --- | --- | --- |
+| Camera 1 | Along local `tool0` +Z, 5 mm in front of the flange. | `/camera_1/image_raw` |
+| Camera 2 | Fixed oblique view of the arm and table. | `/camera_2/image_raw` |
+| Camera 3 | Fixed view straight down over the centre of the default table. | `/camera_3/image_raw` |
+
+Each entry specifies a `parent` (`world` or a robot link) and a
+`pose: [x, y, z, roll, pitch, yaw]` in metres and radians in that frame.
+Gazebo cameras look along their local +X. Add, remove or reorder entries to
+change the panel and ROS topics. For a custom scene use `scene_config:=/path/to/scene.yaml`.
+An empty list or `camera:=false` disables the cameras. The panel also works with
+`gazebo_gui:=false` on systems that support Gazebo sensor rendering.
+The simple joint simulator has no rendered camera inputs.
+
 ## First task: approach the banana
 
 1. Open the panel and wait for **Gazebo tabletop ready** and fresh joint/TCP state.
@@ -114,10 +137,11 @@ are future extensions.
 The server and GUI run as separate processes managed directly by launch. Each run
 uses a unique Gazebo transport partition so it does not connect to an old world.
 The clock bridge reads `/world/tabletop/clock` and publishes ROS `/clock`.
-This transport partition does not isolate the ROS graph: stop all previous arm
-launches and their Gazebo servers before starting another instance in the same
-ROS domain. If logs report `Another world of the same name is running` or duplicate
-controller managers, a previous simulation has not finished shutting down.
+Gazebo uses ROS domain 42 by default so its clock, joint states, and TF are
+isolated from the regular arm launch. Set `gazebo_ros_domain_id:=N` to use another
+domain. In a separate terminal use `ROS_DOMAIN_ID=42` for ROS tools or set it to
+the domain printed by the launcher. Stop a previous Gazebo launch before
+starting another in the same domain.
 
 Gazebo supplies `/clock`; MoveIt, TF, controllers, panel and RViz use simulation
 time in this mode. Pausing Gazebo also pauses motion. Restart the launch to reset
@@ -127,8 +151,8 @@ the demo; resetting time through the GUI during execution is not supported.
 
 ```bash
 python3 -m pytest src/arm_gazebo/test src/arm_web/test src/arm_sim/test src/arm_teleop/test -q
-ros2 control list_controllers
-ros2 topic echo /arm_gazebo/scene_ready --once
+ROS_DOMAIN_ID=42 ros2 control list_controllers
+ROS_DOMAIN_ID=42 ros2 topic echo /arm_gazebo/scene_ready --once
 ```
 
 The controller list should contain active `joint_state_broadcaster` and

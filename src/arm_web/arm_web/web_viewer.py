@@ -2,10 +2,8 @@
 
 GET  /              page (web/index.html)
 GET  /state         JSON snapshot (joints, TCP transform, bridge status, cameras, config)
-GET  /camera.mjpg   live MJPEG stream of camera/image_raw/compressed
-GET  /camera.jpg    latest camera frame
-GET  /camera2.mjpg  live MJPEG stream of camera2/image_raw/compressed (phone)
-GET  /camera2.jpg   latest phone camera frame
+GET  /camera_N.jpg   latest JPEG frame from camera N (numbered from 1)
+GET  /camera_N.mjpg  live MJPEG stream from camera N
 POST /api/jog       {"joint1": deg_per_s, ...}   velocity jog (send repeatedly, ~10 Hz)
 POST /api/goto      {"joint1": deg, ...}         absolute move -> joint_command
 POST /api/home      {"joint": "joint1"}          endstop homing of one joint
@@ -250,16 +248,17 @@ class WebViewer(Node):
         self.create_timer(0.1, self._update_tcp)
 
         self.create_subscription(JointState, 'joint_states', self.store.update_joints, 10)
-        self.camera = CameraFrames()
-        camera_topic = self.declare_parameter(
-            'camera_topic', 'camera/image_raw/compressed').value
-        self.create_subscription(
-            CompressedImage, camera_topic, self.camera.update, qos_profile_sensor_data)
-        self.camera2 = CameraFrames()
-        camera2_topic = self.declare_parameter(
-            'camera2_topic', 'camera2/image_raw/compressed').value
-        self.create_subscription(
-            CompressedImage, camera2_topic, self.camera2.update, qos_profile_sensor_data)
+        camera_count = self.declare_parameter('camera_count', 0).value
+        if camera_count < 0:
+            raise ValueError('camera_count must be nonnegative')
+        self.cameras = {}
+        for number in range(1, camera_count + 1):
+            name = f'camera_{number}'
+            frames = CameraFrames()
+            self.cameras[name] = frames
+            self.create_subscription(
+                CompressedImage, f'/{name}/image_raw/compressed', frames.update,
+                qos_profile_sensor_data)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         if self.require_scene_ready:
             self.create_subscription(Bool, f'{bridge_ns}/scene_ready', self._scene_readiness, latched)
@@ -526,6 +525,9 @@ class WebViewer(Node):
         goal.request.max_velocity_scaling_factor = self.velocity_scaling
         goal.request.max_acceleration_scaling_factor = self.acceleration_scaling
         goal.request.start_state.is_diff = True
+        goal.request.start_state.joint_state.name = list(self.joint_limits)
+        goal.request.start_state.joint_state.position = [
+            state['joints'][name]['position_rad'] for name in self.joint_limits]
         # Each Constraints entry is an alternative goal. MoveIt checks joint
         # bounds, robot/world collisions and the entire path to these candidates.
         for target in targets:
@@ -560,7 +562,7 @@ class WebViewer(Node):
 
         result = response.result
         if result.error_code.val != MoveItErrorCodes.SUCCESS:
-            reason = PLAN_ERRORS.get(result.error_code.val,
+            reason = result.error_code.message or PLAN_ERRORS.get(result.error_code.val,
                                      f'MoveIt error code {result.error_code.val}.')
             return False, reason, None
         points = result.planned_trajectory.joint_trajectory.points
@@ -772,6 +774,7 @@ class WebViewer(Node):
 def make_handler(node, page_path):
 
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = 'HTTP/1.1'
 
         def log_message(self, fmt, *args):
             pass
@@ -782,6 +785,8 @@ def make_handler(node, page_path):
             self.send_header('Content-Type', ctype)
             self.send_header('Cache-Control', 'no-store')
             self.send_header('Content-Length', str(len(data)))
+            if self.close_connection:
+                self.send_header('Connection', 'close')
             self.end_headers()
             self.wfile.write(data)
 
@@ -794,27 +799,28 @@ def make_handler(node, page_path):
                 snap = node.store.snapshot()
                 snap['config'] = node.config()
                 snap['plan'] = node.plan_snapshot()
-                snap['camera'] = node.camera.status()
-                snap['camera2'] = node.camera2.status()
+                snap['cameras'] = [frames.status() for frames in node.cameras.values()]
                 self._send(200, json.dumps(snap))
-            elif path in ('/camera.jpg', '/camera2.jpg'):
-                frames = node.camera2 if path == '/camera2.jpg' else node.camera
-                _, jpeg = frames.latest()
-                if jpeg is None:
-                    self._send(503, '{"error": "no camera frame yet"}')
-                else:
-                    self._send(200, jpeg, 'image/jpeg')
-            elif path == '/camera.mjpg':
-                self._stream_camera(node.camera)
-            elif path == '/camera2.mjpg':
-                self._stream_camera(node.camera2)
             else:
-                self._send(404, '{"error": "not found"}')
+                name, _, extension = path.removeprefix('/').rpartition('.')
+                frames = node.cameras.get(name)
+                if frames is None or extension not in ('mjpg', 'jpg'):
+                    self._send(404, '{"error": "not found"}')
+                elif extension == 'mjpg':
+                    self._stream_camera(frames)
+                else:
+                    _, jpeg = frames.latest()
+                    if jpeg is None:
+                        self._send(503, '{"error": "no camera frame yet"}')
+                    else:
+                        self._send(200, jpeg, 'image/jpeg')
 
         def _stream_camera(self, frames):
+            self.close_connection = True
             self.send_response(200)
             self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
             self.send_header('Cache-Control', 'no-store')
+            self.send_header('Connection', 'close')
             self.end_headers()
             seq = -1
             try:
@@ -834,6 +840,7 @@ def make_handler(node, page_path):
             # Browsers can't send a cross-site application/json POST without a CORS preflight
             # (which we never answer), so other web pages cannot move the arm.
             if not (self.headers.get('Content-Type') or '').startswith('application/json'):
+                self.close_connection = True
                 self._send(415, '{"ok": false, "message": "Content-Type must be application/json"}')
                 return
             try:
