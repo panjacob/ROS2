@@ -9,7 +9,8 @@
 | `arm_nanobee_bridge` | ament_python | `nanobee_bridge` node; `nanobee_protocol.py` and `trajectory.py` (pure, unit tested) |
 | `arm_start` | ament_cmake | `launch/arm.launch.py`, `config/nanobee_bridge.yaml`, `scripts/attach_board.sh` |
 | `arm_web` | ament_python | `web_viewer` node: web page (default http://localhost:8080) with live state, STOP/unlock, hold-to-jog, go-to, endstop homing and browser gamepad forwarding |
-| `arm_teleop` | ament_python | `joy_teleop` node: `/joy` → `/jog` velocities (always started) |
+| `arm_gazebo` | ament_python | Gazebo tabletop simulation, trajectory adapter, and matching MoveIt collision scene |
+| `arm_teleop` | ament_python | `joy_teleop` node: `/joy` → `/jog` velocities in simple simulation and on hardware |
 | `arm_camera` | ament_python | `camera_node`: USB camera (OpenCV/V4L2) → `/camera/image_raw` (bgr8) and `/camera/image_raw/compressed` (JPEG); started unless `camera:=false`. A second instance `camera2` reads the phone camera from a stream URL (`camera2_device`, default `http://{windows_host}:8081/stream.mjpg`) → `/camera2/image_raw[/compressed]` (`camera2_link`); started unless `camera2:=false` |
 | `arm_moveit_config` | ament_cmake | SRDF arm group, self-collision exclusions and OMPL planning configuration |
 
@@ -177,8 +178,8 @@ http://localhost:8080 (from Windows too).
 - STOP / Unlock / re-arm, hold − / + to jog a joint, one shared "Target" column for planning or direct movement; **Joint units** selects degrees (default) or radians for joint positions, targets, gauges and jog speed, "Home" for `home_joints`. On hardware the Bridge card also shows the latched trajectory execution status (armed / executing / result / disarmed); **Unlock / re-arm** enables the motors and re-arms plan execution after STOP or a fault.
 - Changing joint units preserves physical targets, jog speed and an unchanged ready plan. TCP angles remain in degrees; the HTTP API still uses degrees and degrees/s.
 - "Position gauge" bar per joint: −180° … 0 … +180° (−π … 0 … +π rad), the dot shows the current position (red and pinned to the end if outside).
-- TCP position: the panel reads the `world` → `tool0` transform from TF and displays
-  the origin of `tool0` in world coordinates (X/Y/Z in millimetres). It marks the
+- TCP position: the panel reads the reference frame → selected TCP transform from TF
+  and displays that TCP origin (X/Y/Z in millimetres, angles in degrees). It marks the
   position unavailable if joint states or the transform become stale. The web node's
   `reference_frame` parameter changes the reference frame.
 - Named TCPs: use the TCP card to add a name and X/Y/Z offsets in millimetres plus
@@ -187,6 +188,13 @@ http://localhost:8080 (from Windows too).
   Definitions and the selection persist in `~/.config/ros2_arm/tcps.json`; override
   the path with the `tcp_storage_path` launch argument. The built-in `tool0` is the
   zero-offset TCP and cannot be edited or deleted.
+- TCP targets: select **Active TCP**, enter all three **Target X/Y/Z [mm]** in the
+  displayed reference frame (default `world`), then **Preview TCP plan** → review RViz
+  → **Execute TCP plan**. **Use current TCP position** copies fresh coordinates;
+  polling preserves edited targets. Preview and execution require fresh joint/TF state.
+  The selected tool's saved offset is included in the goal. Orientation is free for
+  this 5-DOF arm; this is collision-planned motion, not a guaranteed straight TCP path.
+  The saved TCP definition does not add a tool collision body to the robot model.
 - Cameras card: live MJPEG streams (`GET /camera.mjpg`, snapshot `GET /camera.jpg`) of
   `/camera/image_raw/compressed` (`camera_topic` parameter) and of the phone camera
   (`GET /camera2.mjpg`, `GET /camera2.jpg`, `camera2_topic`). See
@@ -202,12 +210,13 @@ http://localhost:8080 (from Windows too).
 
 HTTP API (JSON body, `Content-Type: application/json` required): `/api/jog` `{"joint1": deg_per_s}`,
 `/api/goto` `{"joint1": deg}`, `/api/plan` `{"joint1": deg, ..., "joint5": deg}`,
+`/api/plan_tcp` `{"tcp_name": "gripper_tip", "x_mm": 100, "y_mm": 0, "z_mm": 200}`,
 `/api/execute` `{"plan_id": "..."}`,
 `/api/home` `{"joint": "joint1"}`, `/api/stop`, `/api/unlock`,
 `/api/joy` `{"axes": [...], "buttons": [...]}`; `GET /state` returns everything shown on the page;
 `GET /camera.mjpg` / `GET /camera.jpg` serve the USB camera, `GET /camera2.mjpg` / `GET /camera2.jpg` the phone camera.
 
-## 6.4 MoveIt 2 joint planning
+## 6.4 MoveIt 2 joint and TCP position planning
 
 From the repository root, source the installed ROS distribution and run the
 following commands.
@@ -224,7 +233,7 @@ source install/setup.bash
 ros2 launch arm_start arm.launch.py
 ```
 
-Open http://localhost:8080, enter all five angles in **Target** (degrees by default; choose radians with **Joint units**), then
+Open http://localhost:8080, enter joint angles in **Target** (degrees by default; choose radians with **Joint units**; blank fields hold current angles with fresh state), then
 click **Preview plan**. After checking the RViz animation, click **Execute plan**. The panel shows the execution result. STOP interrupts the
 movement. Start a new terminal with the ROS and workspace setup sourced
 before using `ros2 topic` or `ros2 service` commands.
@@ -258,7 +267,16 @@ them against the final CAD before relying on collision checks with hardware.
 Execution on hardware goes through the bridge's trajectory action (see
 [Trajectory execution on hardware](#trajectory-execution-on-hardware)); it has been
 tested only offline, not on the physical arm. After STOP or a fault the bridge rejects
-goals until **Unlock / re-arm**. Cartesian/TCP goal planning is not configured yet.
+goals until **Unlock / re-arm**.
+
+TCP position planning uses `/api/plan_tcp` with a configured `tcp_name` and finite
+`x_mm`, `y_mm`, `z_mm` in `reference_frame` (default `world`). It constrains the
+selected TCP origin, including its offset from `tool0`, and leaves orientation
+free. Planning errors, unreachable targets and collisions are reported without a
+direct-motion fallback. Joint and TCP previews share one stored, single-use plan
+and the same RViz preview and execution actions. Editing a TCP target or selected
+TCP definition, selecting/saving/deleting a TCP, and other motion invalidate the
+Cartesian preview; late replies cannot restore local execution readiness.
 
 ## 6.5 `ros2_control` hardware interface (recommended upgrade)
 
@@ -294,8 +312,8 @@ The default model is `arm_concept.urdf.xacro`, which uses the meshes exported fr
 Blender. Pass `model:=arm.urdf.xacro` to either launch file to inspect the original
 primitive model. Both models retain the same joint names, axes and limits.
 
-For physics and controller testing later, add `<ros2_control>` and Gazebo (`ros_gz`)
-plugins to the xacro. That requires realistic inertias (see [05](05-mechanical-design.md)).
+For physics and controller testing, launch with `simulator:=gazebo`. See the
+[Gazebo guide](09-gazebo.md) for the tabletop scene, joint jog, and TCP approach task.
 
 ## 6.7 Coding conventions
 

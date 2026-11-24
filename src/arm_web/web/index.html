@@ -108,7 +108,7 @@
     </select></label>
     <label>Jog speed <input id="speed" type="range" min="1" max="360" value="120"
       oninput="speedChanged()"> <span id="speedLbl">120</span> <span id="speedUnit">°/s</span></label>
-    <span class="muted hint">Hold − / + to jog; release to stop.</span>
+    <span class="muted hint">Hold − / + to jog; release to stop. Jog moves directly, without collision checking.</span>
   </div>
   <div class="table-scroll" role="region" aria-label="Joint targets and manual controls" tabindex="0">
     <table>
@@ -120,7 +120,7 @@
   <div class="row actions">
     <button onclick="copyCurrentToPlan()">Use current angles</button>
     <button class="primary" id="planButton" onclick="planJoints()">Preview plan</button>
-    <button class="primary" id="executeButton" onclick="executeJoints()" disabled>Execute plan</button>
+    <button class="primary" id="executeButton" onclick="executeJoints('joints')" disabled>Execute plan</button>
   </div>
   <p id="planStatus" class="muted" role="status" aria-live="polite">Enter target angles; blank targets keep the current angle (fresh joint state required).</p>
   <p class="muted hint" id="executionHint">Planning checks joint limits and collisions. Review the RViz animation before executing.</p>
@@ -149,6 +149,25 @@
   <div class="row" style="margin-top:1em">
     <label>Active TCP <select id="tcpSelect" onchange="selectTcp(this.value)"></select></label>
   </div>
+  <p class="hint" id="tcpTargetFrame">Target: selected TCP origin in world [mm].</p>
+  <div id="demoTarget" hidden>
+    <p class="hint" id="demoTargetHint"></p>
+    <button onclick="useDemoTarget()">Use target above banana</button>
+    <p class="hint">Gazebo supports plans and joint Jog. Gamepad and direct target moves are unavailable.</p>
+  </div>
+  <div class="tcp-editor">
+    <label>Target X [mm] <input id="tcpTargetX" type="number" step="any" oninput="tcpTargetChanged()"></label>
+    <label>Target Y [mm] <input id="tcpTargetY" type="number" step="any" oninput="tcpTargetChanged()"></label>
+    <label>Target Z [mm] <input id="tcpTargetZ" type="number" step="any" oninput="tcpTargetChanged()"></label>
+  </div>
+  <p class="hint">Orientation is free (5 DOF). Preview checks collisions; the TCP path need not be a straight line. Joint units do not change these millimetres.</p>
+  <div class="actions">
+    <button id="tcpCopyButton" onclick="copyCurrentTcpToPlan()" disabled>Use current TCP position</button>
+    <button class="primary" id="tcpPlanButton" onclick="planTcp()" disabled>Preview TCP plan</button>
+    <button class="primary" id="tcpExecuteButton" onclick="executeJoints('tcp')" disabled>Execute TCP plan</button>
+  </div>
+  <p id="tcpPlanStatus" class="muted" role="status" aria-live="polite">Enter X, Y and Z, preview in RViz, then execute.</p>
+  <p id="tcpExecutionHint" class="hint"></p>
   <details>
     <summary>TCP settings</summary>
     <div class="row" style="margin-top:.8em">
@@ -156,13 +175,13 @@
       <button id="tcpDelete" onclick="deleteTcp()">Delete selected</button>
     </div>
   <div class="tcp-editor">
-    <label>Name <input id="tcpName" placeholder="gripper_tip" maxlength="32"></label>
-    <label>X [mm] <input id="tcpOffsetX" type="number" step="0.1" value="0"></label>
-    <label>Y [mm] <input id="tcpOffsetY" type="number" step="0.1" value="0"></label>
-    <label>Z [mm] <input id="tcpOffsetZ" type="number" step="0.1" value="0"></label>
-    <label>Roll [°] <input id="tcpRoll" type="number" step="0.1" value="0"></label>
-    <label>Pitch [°] <input id="tcpPitch" type="number" step="0.1" value="0"></label>
-    <label>Yaw [°] <input id="tcpYaw" type="number" step="0.1" value="0"></label>
+    <label>Name <input id="tcpName" oninput="tcpDefinitionChanged()" placeholder="gripper_tip" maxlength="32"></label>
+    <label>X [mm] <input id="tcpOffsetX" oninput="tcpDefinitionChanged()" type="number" step="0.1" value="0"></label>
+    <label>Y [mm] <input id="tcpOffsetY" oninput="tcpDefinitionChanged()" type="number" step="0.1" value="0"></label>
+    <label>Z [mm] <input id="tcpOffsetZ" oninput="tcpDefinitionChanged()" type="number" step="0.1" value="0"></label>
+    <label>Roll [°] <input id="tcpRoll" oninput="tcpDefinitionChanged()" type="number" step="0.1" value="0"></label>
+    <label>Pitch [°] <input id="tcpPitch" oninput="tcpDefinitionChanged()" type="number" step="0.1" value="0"></label>
+    <label>Yaw [°] <input id="tcpYaw" oninput="tcpDefinitionChanged()" type="number" step="0.1" value="0"></label>
     <button id="tcpSave" onclick="saveTcp()">Save and select</button>
   </div>
   <p class="muted">Offsets and rotation are relative to tool0. Names: letters, numbers, _ or -.</p>
@@ -291,11 +310,22 @@ function setJointUnits(units) {
   renderJointUnits(true);
 }
 let jogTimer = null;
+let jogGeneration = 0;
+let jogPending = null;
+let jogBarrier = Promise.resolve();
+let stopPending = false;
 let tcpUiKey = '';
 let latestJoints = {};
 let latestJointsAge = null;
 let latestJointsReceived = 0;
 let planId = null;
+let planKind = 'joints';
+let latestTcp = null;
+let latestTcpError = null;
+let latestTcpName = null;
+let tcpControlsPending = 0;
+let tcpAwaitingState = false;
+let tcpPollAfter = 0;
 let planReady = false;
 let planRevision = 0;
 let planPending = false;
@@ -325,6 +355,8 @@ async function post(path, body, quiet = false) {
 function planStatus(message, cls = 'muted') {
   $('planStatus').textContent = message;
   $('planStatus').className = cls;
+  $('tcpPlanStatus').textContent = message;
+  $('tcpPlanStatus').className = cls;
 }
 
 function freshJointState() {
@@ -334,10 +366,73 @@ function freshJointState() {
     && names.every(n => Number.isFinite(latestJoints[n]?.position_deg));
 }
 
+function freshTcpState() {
+  return freshJointState() && !tcpControlsPending && !tcpAwaitingState
+    && latestTcpName === config.selected_tcp && latestTcp?.frame === config.tcp_frame
+    && !latestTcpError && Number.isFinite(latestTcp?.age)
+    && latestTcp.age + (Date.now() - latestJointsReceived) / 1000 < 2
+    && ['x', 'y', 'z'].every(axis => Number.isFinite(latestTcp.position_m?.[axis]));
+}
+
 function updatePlanButtons() {
-  $('executeButton').disabled = !freshJointState() || !config.execution_available || !planId || !planReady || planPending || executionPending;
-  $('planButton').disabled = !connected || planPending || executionPending;
-  $('directButton').disabled = !connected || executionPending;
+  const sceneReady = config.scene_ready !== false;
+  const jogActive = config.jog_active || !!jogTimer;
+  const executable = !jogActive && sceneReady && freshJointState() && config.execution_available && planId && planReady && !planPending && !executionPending;
+  $('executeButton').disabled = !executable || planKind !== 'joints';
+  $('tcpExecuteButton').disabled = !executable || planKind !== 'tcp' || !freshTcpState();
+  $('tcpCopyButton').disabled = !freshTcpState() || planPending || executionPending;
+  $('tcpPlanButton').disabled = jogActive || !sceneReady || !freshTcpState() || planPending || executionPending;
+  $('planButton').disabled = jogActive || !sceneReady || !connected || planPending || executionPending;
+  $('directButton').disabled = config.direct_motion_available === false || !connected || executionPending;
+  for (const name of Object.keys(config.joint_limits_deg || {})) {
+    const disabled = !jogAvailable() || !sceneReady || !freshJointState() || executionPending || stopPending;
+    for (const prefix of ['jogMinus_', 'jogPlus_']) {
+      const button = $(prefix + name);
+      if (button) button.disabled = disabled;
+    }
+  }
+}
+
+function jogAvailable() { return (config.jog_available ?? config.direct_motion_available) !== false; }
+
+function useDemoTarget() {
+  if (!config.demo_target_mm || executionPending) return;
+  for (const [i, axis] of [...'XYZ'].entries()) $('tcpTarget' + axis).value = config.demo_target_mm[i];
+  tcpTargetChanged();
+}
+
+function tcpTargetChanged() {
+  invalidatePlan('TCP target changed; preview again before executing.');
+}
+
+function copyCurrentTcpToPlan() {
+  if (!freshTcpState() || planPending || executionPending) return;
+  tcpTargetChanged();
+  for (const axis of ['x', 'y', 'z'])
+    $('tcpTarget' + axis.toUpperCase()).value = String(latestTcp.position_m[axis] * 1000);
+  planStatus('Current TCP position copied. Adjust X/Y/Z, then preview a TCP plan.');
+}
+
+function readTcpTargets() {
+  const target = {tcp_name: config.selected_tcp};
+  for (const axis of ['x', 'y', 'z']) {
+    const input = $('tcpTarget' + axis.toUpperCase());
+    if (!input.value.trim() || input.validity?.badInput || !Number.isFinite(Number(input.value))) {
+      planStatus(`Enter a finite target ${axis.toUpperCase()} in millimetres.`, 'bad');
+      input.focus();
+      return null;
+    }
+    target[axis + '_mm'] = Number(input.value);
+  }
+  return target;
+}
+
+async function planTcp() {
+  if (!freshTcpState() || planPending || executionPending) return;
+  invalidatePlan('Preparing TCP preview…');
+  const target = readTcpTargets();
+  if (!target) return;
+  await requestPlan('/api/plan_tcp', target, 'tcp');
 }
 
 function invalidatePlan(message) {
@@ -350,25 +445,46 @@ function invalidatePlan(message) {
 }
 
 async function stopArm() {
-  stopJog();
+  stopPending = true;
+  await stopJog();
   invalidatePlan('Stopping…');
   const revision = planRevision;
   const result = await post('/api/stop', {}, true);
+  stopPending = false;
+  updatePlanButtons();
   if (revision === planRevision)
     planStatus(result?.ok ? 'Stopped.' : (result?.message || 'STOP failed.'), result?.ok ? 'warn' : 'bad');
 }
 
-function startJog(joint, dir) {
-  stopJog();
+async function startJog(joint, dir) {
+  if (!jogAvailable() || executionPending || stopPending || config.scene_ready === false || !freshJointState()) return;
+  const barrier = stopJog();
+  const generation = jogGeneration;
+  await barrier;
+  if (generation !== jogGeneration || executionPending || stopPending) return;
   const send = () => {
+    if (generation !== jogGeneration || jogPending) return;
     jogDegrees = cachedDegrees($('speed'), jogDegrees);
-    if (jogDegrees.degrees != null) post('/api/jog', {[joint]: dir * jogDegrees.degrees});
+    if (jogDegrees.degrees != null) {
+      const request = post('/api/jog', {[joint]: dir * jogDegrees.degrees});
+      jogPending = request;
+      request.finally(() => { if (jogPending === request) jogPending = null; });
+    }
   };
   send();
   jogTimer = {id: setInterval(send, 100), joint};
+  updatePlanButtons();
 }
 function stopJog() {
-  if (jogTimer) { clearInterval(jogTimer.id); post('/api/jog', {[jogTimer.joint]: 0}); jogTimer = null; }
+  jogGeneration++;
+  if (jogTimer) {
+    const joint = jogTimer.joint;
+    clearInterval(jogTimer.id);
+    jogTimer = null;
+    const pending = jogPending;
+    jogBarrier = jogBarrier.then(() => pending).then(() => post('/api/jog', {[joint]: 0}));
+  }
+  return jogBarrier;
 }
 window.addEventListener('pointerup', stopJog);
 window.addEventListener('pointercancel', stopJog);
@@ -448,13 +564,18 @@ async function planJoints() {
   invalidatePlan('Preparing preview…');
   const target = readTargets();
   if (!target) return;
+  await requestPlan('/api/plan', target, 'joints');
+}
+
+async function requestPlan(path, target, kind) {
+  planKind = kind;
   stopJog();
   const revision = planRevision;
   planPending = true;
   updatePlanButtons();
   planStatus('Planning…', 'warn');
   try {
-    const result = await post('/api/plan', target, true);
+    const result = await post(path, target, true);
     if (revision !== planRevision) return;
     planId = result?.ok && result.plan_id ? result.plan_id : null;
     planReady = false; // A fresh matching /state response must confirm readiness.
@@ -467,7 +588,8 @@ async function planJoints() {
   }
 }
 
-async function executeJoints() {
+async function executeJoints(kind = 'joints') {
+  if (kind !== planKind || (kind === 'tcp' && !freshTcpState())) return;
   if (!planId || !planReady || !freshJointState() || !config.execution_available || planPending || executionPending) return;
   const id = planId;
   invalidatePlan('Executing plan…');
@@ -507,8 +629,9 @@ function loadTcpEditor(tcp) {
 }
 
 function updateTcpControls() {
-  const key = JSON.stringify([config.selected_tcp, config.tcps]);
+  const key = JSON.stringify([config.reference_frame, config.tcp_frame, config.selected_tcp, config.tcps]);
   if (key === tcpUiKey) return;
+  if (tcpUiKey && planKind === 'tcp') invalidatePlan('TCP configuration changed; preview again.');
   tcpUiKey = key;
   const select = $('tcpSelect');
   select.replaceChildren();
@@ -524,14 +647,33 @@ function updateTcpControls() {
 }
 
 async function selectTcp(name) {
-  const result = await post('/api/tcp/select', {name});
+  const result = await changeTcp('/api/tcp/select', {name});
   if (result?.ok) {
     const active = config.tcps.find(tcp => tcp.name === name);
     if (active) loadTcpEditor(active);
   }
 }
 
+function tcpDefinitionChanged() {
+  if (planKind === 'tcp') invalidatePlan('TCP settings edited; preview again.');
+}
+
+async function changeTcp(path, body) {
+  tcpDefinitionChanged();
+  tcpControlsPending++;
+  updatePlanButtons();
+  try {
+    const result = await post(path, body);
+    if (result?.ok) { tcpAwaitingState = true; tcpPollAfter = pollSequence; }
+    return result;
+  } finally {
+    tcpControlsPending--;
+    updatePlanButtons();
+  }
+}
+
 function newTcp() {
+  tcpDefinitionChanged();
   $('tcpName').disabled = false;
   $('tcpName').value = '';
   for (const id of ['tcpOffsetX', 'tcpOffsetY', 'tcpOffsetZ', 'tcpRoll', 'tcpPitch', 'tcpYaw'])
@@ -546,7 +688,7 @@ async function saveTcp() {
     show('Enter finite TCP offsets and angles.', 'bad');
     return;
   }
-  await post('/api/tcp/save', {
+  await changeTcp('/api/tcp/save', {
     name: $('tcpName').value.trim(),
     x_mm: Number($('tcpOffsetX').value), y_mm: Number($('tcpOffsetY').value),
     z_mm: Number($('tcpOffsetZ').value),
@@ -558,11 +700,11 @@ async function saveTcp() {
 async function deleteTcp() {
   const name = $('tcpSelect').value;
   if (name === 'tool0' || !confirm(`Delete TCP ${name}?`)) return;
-  await post('/api/tcp/delete', {name});
+  await changeTcp('/api/tcp/delete', {name});
 }
 
 function buildRows(names) {
-  const key = JSON.stringify([names, config.home_joints, config.joint_limits_deg]);
+  const key = JSON.stringify([names, config.home_joints, config.joint_limits_deg, config.direct_motion_available, config.jog_available]);
   if (key === rowsBuilt) return;
   const previous = Object.fromEntries(names.map(n => [n, $('target_' + n)?.value || '']));
   if (rowsBuilt) invalidatePlan('Robot configuration changed; check targets and preview again.');
@@ -572,8 +714,8 @@ function buildRows(names) {
     <tr><th scope="row">${n}</th><td class="num" id="pos_${n}">–</td>
       <td><div class="bar"><div class="mid"></div><div class="dot none" id="dot_${n}"></div></div>
           <div class="scale"><span id="scale_${n}">-${RANGE}°</span><span id="scaleZero_${n}">0°</span><span id="scaleMax_${n}">+${RANGE}°</span></div></td>
-      <td><button aria-label="Jog ${n} negative" onpointerdown="startJog('${n}',-1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',-1); }">−</button>
-          <button aria-label="Jog ${n} positive" onpointerdown="startJog('${n}',1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',1); }">+</button></td>
+      <td><button id="jogMinus_${n}" ${!jogAvailable() ? 'disabled' : ''} aria-label="Jog ${n} negative" onpointerdown="startJog('${n}',-1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',-1); }">−</button>
+          <button id="jogPlus_${n}" ${!jogAvailable() ? 'disabled' : ''} aria-label="Jog ${n} positive" onpointerdown="startJog('${n}',1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',1); }">+</button></td>
       <td><input class="target-input" aria-label="${n} target angle in degrees" type="number" step="any" min="${config.joint_limits_deg[n][0]}" max="${config.joint_limits_deg[n][1]}" id="target_${n}" oninput="planChanged()"></td>
       ${config.home_joints.length ? `<td>${config.home_joints.includes(n) ? `<button aria-label="Home ${n}" onclick="home('${n}')">Home</button>` : '—'}</td>` : ''}</tr>`).join('');
   for (const n of names) $('target_' + n).value = previous[n];
@@ -591,22 +733,37 @@ async function poll() {
     appliedPoll = sequence;
     connected = true;
     config = s.config;
+    $('demoTarget').hidden = !config.demo_target_mm;
+    $('demoTargetHint').textContent = config.scene_ready === false
+      ? 'Waiting for Gazebo controllers and the tabletop collision scene…'
+      : `Target above banana in world [mm]: ${(config.demo_target_mm || []).map(v => v.toFixed(1)).join(', ')}. Applies to the selected TCP.`;
     latestJoints = s.joints;
     latestJointsAge = s.joints_age;
     latestJointsReceived = Date.now();
     renderCamera('cam', s.camera);
     renderCamera('cam2', s.camera2);
+    latestTcp = s.tcp;
+    latestTcpError = s.tcp_error;
+    latestTcpName = config.selected_tcp;
+    // Dynamic joint buttons must exist before plan/TCP state updates touch them.
+    // The first /state reply may arrive before any ROS joint state is available.
+    const names = Object.keys(config.joint_limits_deg || {}).sort();
+    buildRows(names);
+    if (!tcpControlsPending && sequence > tcpPollAfter) tcpAwaitingState = false;
+    updateTcpControls();
     $('executeButton').hidden = !config.execution_available;
+    $('tcpExecuteButton').hidden = !config.execution_available;
     $('executionHint').textContent = !config.execution_available
       ? 'Plan preview only; execution unavailable. Review the RViz animation. Direct movement below does not use collision checking.'
       : (config.simulation
         ? 'Planning checks joint limits and collisions. Review the RViz animation before executing in the simulator.'
         : `Executes on the REAL ARM at ${Math.round((config.velocity_scaling || 0) * 100)}% speed. Review the RViz animation, keep the area clear and power cut-off within reach; STOP is not an emergency stop.`);
+    $('tcpExecutionHint').textContent = $('executionHint').textContent;
     if (revision === planRevision && !planPending && sequence > planPollAfter) {
       if (planId) {
         if (s.plan?.state === 'ready' && s.plan.plan_id === planId) {
-          planReady = freshJointState();
-          planStatus(planReady ? (s.plan.message || 'Preview ready. Review the RViz animation.') : 'No fresh complete joint state; wait before executing.', planReady ? 'ok' : 'warn');
+          planReady = freshJointState() && (planKind !== 'tcp' || freshTcpState());
+          planStatus(planReady ? (s.plan.message || 'Preview ready. Review the RViz animation.') : (planKind === 'tcp' ? 'No fresh joint/selected TCP state; wait before executing.' : 'No fresh complete joint state; wait before executing.'), planReady ? 'ok' : 'warn');
         } else {
           invalidatePlan(s.plan?.state === 'ready' ? 'Preview replaced; preview again.' : (s.plan?.message || 'Preview unavailable; preview again.'));
         }
@@ -616,14 +773,12 @@ async function poll() {
       }
     }
     updatePlanButtons();
-    updateTcpControls();
+    $('tcpTargetFrame').textContent = `Target: ${config.selected_tcp} origin in ${config.reference_frame} [mm].`;
     $('controllerTitle').textContent = config.simulation ? 'Simulation' : 'Bridge';
     $('unlock').hidden = !!config.simulation;
     $('endstopsCard').hidden = !!config.simulation;
     jogDegrees = cachedDegrees($('speed'), jogDegrees);
     $('conn').textContent = 'connected'; $('conn').className = 'ok';
-    const names = Object.keys(config.joint_limits_deg || {}).sort();
-    buildRows(names);
     renderJointUnits();
     $('age').textContent = s.joints_age == null ? 'no joint_states yet'
       : `joint_states age ${s.joints_age.toFixed(2)} s`;
@@ -655,7 +810,7 @@ async function poll() {
           return `<span>${j}: <span class="lamp ${cls}">${txt}</span></span>`;
         }).join('');
     $('homing').textContent = st('homing_status');
-    $('executionStatusRow').hidden = !!config.simulation;
+    $('executionStatusRow').hidden = !!config.simulation && !config.demo_target_mm;
     const ts = st('trajectory_status');
     $('trajectoryStatus').textContent = ts;
     $('trajectoryStatus').className = /^(disarmed|abort)/.test(ts) ? 'bad' : '';
@@ -663,9 +818,9 @@ async function poll() {
     if (sequence < appliedPoll) return;
     appliedPoll = sequence;
     connected = false;
+    $('conn').textContent = 'disconnected'; $('conn').className = 'bad';
     stopJog();
     invalidatePlan('Connection lost; reconnect and preview again.');
-    $('conn').textContent = 'disconnected'; $('conn').className = 'bad';
   }
 }
 setInterval(poll, 200);
@@ -674,6 +829,10 @@ poll();
 // --- Gamepad: browser reads it (Windows driver) and forwards to ROS /joy ---
 let padActive = false;
 function padLoop() {
+  if (config.direct_motion_available === false) {
+    $('padinfo').textContent = 'Gamepad motion is unavailable in the Gazebo demo. Use previewed plans.';
+    return;
+  }
   const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
   // Prefer a real pad with the standard (Xbox-style) layout over virtual devices like vJoy.
   const pad = pads.find(p => p.mapping === 'standard' && !/vjoy/i.test(p.id))

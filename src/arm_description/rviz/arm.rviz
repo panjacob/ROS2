@@ -28,6 +28,18 @@ Visualization Manager:
       Name: TF
       Enabled: false
       Value: false
+    - Class: moveit_rviz_plugin/PlanningScene
+      Name: Environment
+      Enabled: true
+      Planning Scene Topic: /monitored_planning_scene
+      Robot Description: robot_description
+      Scene Geometry:
+        Scene Alpha: 0.8
+        Show Scene Geometry: true
+      Scene Robot:
+        Show Robot Visual: false
+        Show Robot Collision: false
+      Value: true
     - Class: moveit_rviz_plugin/Trajectory
       Name: Planned trajectory
       Enabled: true

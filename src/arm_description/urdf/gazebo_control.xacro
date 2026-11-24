@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="gazebo" default="false"/>
+  <xacro:arg name="gazebo_controllers" default=""/>
+  <xacro:arg name="gazebo_max_velocity" default="2.0943951023931953"/>
+  <!-- The faster simulation limit is independent of the physical arm limits. -->
+  <xacro:macro name="arm_joint_limit" params="lower upper velocity">
+    <xacro:if value="$(arg gazebo)">
+      <limit lower="${lower}" upper="${upper}" velocity="$(arg gazebo_max_velocity)" effort="5.0"/>
+    </xacro:if>
+    <xacro:unless value="$(arg gazebo)">
+      <limit lower="${lower}" upper="${upper}" velocity="${velocity}" effort="5.0"/>
+    </xacro:unless>
+  </xacro:macro>
+  <xacro:if value="$(arg gazebo)">
+    <ros2_control name="GazeboArm" type="system">
+      <hardware><plugin>gz_ros2_control/GazeboSimSystem</plugin></hardware>
+      <xacro:macro name="sim_joint" params="name">
+        <joint name="${name}">
+          <command_interface name="position"/>
+          <state_interface name="position"><param name="initial_value">0.0</param></state_interface>
+          <state_interface name="velocity"/>
+        </joint>
+      </xacro:macro>
+      <xacro:sim_joint name="joint1"/>
+      <xacro:sim_joint name="joint2"/>
+      <xacro:sim_joint name="joint3"/>
+      <xacro:sim_joint name="joint4"/>
+      <xacro:sim_joint name="joint5"/>
+    </ros2_control>
+    <gazebo>
+      <plugin filename="libgz_ros2_control-system.so" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+        <parameters>$(arg gazebo_controllers)</parameters>
+      </plugin>
+    </gazebo>
+  </xacro:if>
+</robot>

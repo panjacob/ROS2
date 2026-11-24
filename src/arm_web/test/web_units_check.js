@@ -125,19 +125,19 @@ async function main() {
     assert.deepEqual(requests.at(-1), {url: '/api/goto', body: {joint1: -30, joint2: 0}});
     await run('planJoints()');
     assert.deepEqual(requests.at(-1), {url: '/api/plan', body: {joint1: -30, joint2: 0}});
-    run('startJog("joint1", -1)');
+    await run('startJog("joint1", -1)');
     assert.deepEqual(requests.at(-1), {url: '/api/jog', body: {joint1: -120}});
     units(unit === 'deg' ? 'rad' : 'deg');
-    run('startJog("joint1", 1)');
+    await run('startJog("joint1", 1)');
     assert.deepEqual(requests.at(-1), {url: '/api/jog', body: {joint1: 120}});
-    run('stopJog()'); assert.equal(requests.at(-1).body.joint1, 0);
+    await run('stopJog()'); assert.equal(requests.at(-1).body.joint1, 0);
   }
   // User-edited radian speed preserves physical value across repeated switching.
   units('rad'); element('speed').value = '1.2345'; run('speedChanged()');
   const physicalSpeed = 1.2345 * 180 / Math.PI;
   for (let i = 0; i < 100; i++) { units('deg'); units('rad'); }
-  run('startJog("joint2", 1)'); close(requests.at(-1).body.joint2, physicalSpeed);
-  run('stopJog()');
+  await run('startJog("joint2", 1)'); close(requests.at(-1).body.joint2, physicalSpeed);
+  await run('stopJog()');
   // A unit switch during in-flight planning does not discard the response.
   let resolvePlan;
   pendingFetch = () => new Promise(resolve => { resolvePlan = resolve; });

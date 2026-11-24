@@ -4,9 +4,13 @@ project(arm_start)
 find_package(ament_cmake REQUIRED)
 
 install(
-  DIRECTORY launch config
+  DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
 )
+
+if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/config")
+  install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
+endif()
 
 install(
   PROGRAMS scripts/attach_board.sh
