@@ -7,11 +7,11 @@
 | `arm_description` | ament_cmake | `urdf/arm.urdf.xacro`, `meshes/`, `launch/display.launch.py` |
 | `arm_sim` | ament_python | Joint simulator for panel direct/jog/gamepad commands; publishes `/joint_states` |
 | `arm_nanobee_bridge` | ament_python | `nanobee_bridge` node; `nanobee_protocol.py` and `trajectory.py` (pure, unit tested) |
-| `arm_start` | ament_cmake | `launch/arm.launch.py`, `config/nanobee_bridge.yaml`, `scripts/attach_board.sh` |
+| `arm_start` | ament_cmake | `launch/arm.launch.py`, `config/nanobee_bridge.yaml`, `scripts/attach_board.sh`, `scripts/attach_camera.sh`, `scripts/camera_driver.sh` |
 | `arm_web` | ament_python | `web_viewer` node: web page (default http://localhost:8080) with live state, STOP/unlock, hold-to-jog, go-to, endstop homing and browser gamepad forwarding |
 | `arm_gazebo` | ament_python | Gazebo tabletop simulation, trajectory adapter, and matching MoveIt collision scene |
 | `arm_teleop` | ament_python | `joy_teleop` node: `/joy` → `/jog` velocities in simple simulation and on hardware |
-| `arm_camera` | ament_python | `camera_node`: USB camera (OpenCV/V4L2) → `/camera/image_raw` (bgr8) and `/camera/image_raw/compressed` (JPEG); started unless `camera:=false`. A second instance `camera2` reads the phone camera from a stream URL (`camera2_device`, default `http://{windows_host}:8081/stream.mjpg`) → `/camera2/image_raw[/compressed]` (`camera2_link`); started unless `camera2:=false` |
+| `arm_camera` | ament_python | `camera_node`: USB camera (OpenCV/V4L2) → `/camera/image_raw` (bgr8) and `/camera/image_raw/compressed` (JPEG); started unless `camera:=false` (which also disables `camera2`). A second instance `camera2` reads the phone camera from a stream URL (`camera2_device`, default `http://{windows_host}:8081/stream.mjpg`) → `/camera2/image_raw[/compressed]` (`camera2_link`); started unless `camera2:=false` |
 | `arm_moveit_config` | ament_cmake | SRDF arm group, self-collision exclusions and OMPL planning configuration |
 
 Planned:
@@ -31,19 +31,22 @@ Source: [nanobee_bridge.py](../src/arm_nanobee_bridge/arm_nanobee_bridge/nanobee
 | `joint_states` (pub) | `sensor_msgs/JointState` | Positions [rad] = board steps (`P:` in the status report) / `steps_per_deg`, at `status_rate` Hz (20) |
 | `~/machine_state` (pub) | `std_msgs/String` | NanoBee state: `Idle`/`Run`/`Jog`/`Home`, with ` motors off` appended while the drivers are disabled |
 | `~/limit_switches` (pub) | `std_msgs/String` | Comma-separated joints whose endstop is pressed (e.g. `joint1`); empty when none |
+| `~/motors_enabled` (pub) | `std_msgs/Bool` | Motor drivers enabled (board `E:1`) |
+| `~/motors_powered` (pub) | `std_msgs/String` | Comma-separated joints whose driver is powered (board `O:`); an enabled joint can be idle-disabled by the board |
 | `joint_command` (sub) | `sensor_msgs/JointState` | Absolute target [rad] for named joints, one `M` move at `move_speed` (0 = board `motion.default_speed`); ignored while a trajectory goal is active or homing runs |
 | `joint_trajectory` (sub) | `trajectory_msgs/JointTrajectory` | Unconfirmed legacy path: one `T` segment per point (+ final deceleration ramp), no URDF limit checks or completion (ignored while a trajectory goal is active or a previous one still streams). Prefer the action |
 | `jog` (sub) | `sensor_msgs/JointState` | Velocity jog: `velocity` [rad/s] per named joint (others 0), sent as `J` at `jog_rate`, clamped to `max_jog_speed` and the board's `max_speed`. Must be re-sent within `jog_timeout`; zero/stale → jog stops. Ignored while a trajectory goal is active |
 | `/arm_controller/follow_joint_trajectory` (action) | `control_msgs/FollowJointTrajectory` | MoveIt execution on the real arm, see [Trajectory execution](#trajectory-execution-on-hardware) |
 | `~/trajectory_status` (pub, latched) | `std_msgs/String` | Armed / executing / result / disarm reason of trajectory execution |
 | `~/home` (srv) | `std_srvs/Trigger` | `H`: home every joint with `joints.jointN.homing` ≠ `none` (board must be `Idle`; refused while jogging, streaming or a trajectory goal is active) |
-| `~/home_<joint>` (srv) | `std_srvs/Trigger` | `H j`: home one joint; only created for joints with a homing mode (joint1, `center`: switch found from both sides, the middle becomes `home_offset_deg`) |
+| `~/home_<joint>` (srv) | `std_srvs/Trigger` | `H j`: home one joint; refused with a reason if the board has `homing: none` for it (joint1 `center`: switch found from both sides, the middle becomes `home_offset_deg`; joint2 `edge`: from the top toward +90° until the switch) |
 | `~/homing_status` (pub, latched) | `std_msgs/String` | Homing progress / result text |
 | `~/stop` (srv) | `std_srvs/Trigger` | `S`: decelerate to a stop, drop queued motion, cancel homing; aborts the trajectory goal and jog. If `S` is not acknowledged the instant halt `!` is sent. Disarms trajectory execution until `~/unlock` |
 | `~/unlock` (srv) | `std_srvs/Trigger` | `E 1` (enable the motors) and re-arm trajectory execution after STOP or a fault; fails (stays disarmed) if the board does not answer `ok`. Refused while a trajectory goal is active. Never homes |
 | `~/motors` (srv) | `std_srvs/SetBool` | `E 1` / `E 0`: enable / disable the drivers. Disabled joints can be moved by hand; the board then forgets the home reference |
 | `~/set_zero` (srv) | `std_srvs/Trigger` | `Z`: joints that are not referenced (homed or zeroed) get position 0; referenced joints keep theirs. Board must be `Idle` |
 | `~/reload_settings` (srv) | `std_srvs/Trigger` | Read the board settings again (`SETTINGS?`) after changing its config.yaml |
+| `~/push_config` (srv) | `std_srvs/Trigger` | Upload the file at parameter `config_path` (`arm.launch.py`: `NanoBee/NanoBeeDriver/config.yaml`) with `CONFIG`…`END`, then reload the settings. Board must be `Idle`, no goal/jog active; the firmware validates the file and answers `err ...` if it rejects it. Changed homing modes need a bridge restart (home services) |
 
 Parameters: see [nanobee_bridge.yaml](../src/arm_start/config/nanobee_bridge.yaml) (serial port,
 joint names in firmware order, rates, timeouts, trajectory tolerances, jog limits). Steps per
@@ -160,7 +163,8 @@ ros2 topic echo /nanobee_bridge/homing_status
 ```
 
 Homing is configured on the board (`joints.jointN.homing`, `homing_dir`, `home_offset_deg`,
-`homing.*` in [config.yaml](../NanoBee/NanoBeeDriver/config.yaml)); joint1 uses `center`.
+`homing.*` in [config.yaml](../NanoBee/NanoBeeDriver/config.yaml)); joint1 uses `center`, joint2
+uses `edge` (Y-MIN, GPIO 32; starts at the top and creeps toward +90° until the switch).
 Endstop pins are fixed in [NanoBee/src/config.h](../NanoBee/src/config.h): joint1 uses X-MIN
 (GPIO 33), connector pins **S G 5V** (left to right): wire the switch's C + NC legs to **S + G**
 (5V unused). Normally-closed reads low when released, so the pin is active-high
@@ -168,14 +172,14 @@ Endstop pins are fixed in [NanoBee/src/config.h](../NanoBee/src/config.h): joint
 instead, set `endstops.active_low: true`, push the config (see [04](04-nanobee-setup.md)) and call
 `~/reload_settings`. Check the switch on the web page: the "Endstops" card shows a red **PRESSED**
 lamp only while it is pressed (joints listed in the `home_joints` param of `web_viewer`,
-default `['joint1']`).
+default `['joint1', 'joint2']`).
 
 ## 6.3 Web page and gamepad
 
 `ros2 launch arm_start arm.launch.py use_hardware:=true`, then open
 http://localhost:8080 (from Windows too).
 
-- STOP / Unlock / re-arm, hold − / + to jog a joint, one shared "Target" column for planning or direct movement; **Joint units** selects degrees (default) or radians for joint positions, targets, gauges and jog speed, "Home" for `home_joints`. On hardware the Bridge card also shows the latched trajectory execution status (armed / executing / result / disarmed); **Unlock / re-arm** enables the motors and re-arms plan execution after STOP or a fault.
+- STOP / Unlock / re-arm, hold − / + to jog a joint, one shared "Target" column for planning or direct movement; **Joint units** selects degrees (default) or radians for joint positions, targets, gauges and jog speed, "Home" for `home_joints`. On hardware the Bridge card also shows the latched trajectory execution status (armed / executing / result / disarmed); **Unlock / re-arm** enables the motors and re-arms plan execution after STOP or a fault. On hardware the Bridge card also shows **Motors: ENABLED / DISABLED** with **Enable motors** / **Disable motors** buttons (disable asks for confirmation: joints go free and the home reference is cleared), and the joint table has a **Motor** column per joint: `ON` (powered), `sleep` (power-save: `joints.jointN.idle_disable` switched the driver off after `motion.idle_timeout_ms` at rest; wakes on the next move), `OFF` (drivers disabled) or `–` (no fresh status).
 - Changing joint units preserves physical targets, jog speed and an unchanged ready plan. TCP angles remain in degrees; the HTTP API still uses degrees and degrees/s.
 - "Position gauge" bar per joint: −180° … 0 … +180° (−π … 0 … +π rad), the dot shows the current position (red and pinned to the end if outside).
 - TCP position: the panel reads the reference frame → selected TCP transform from TF
@@ -213,6 +217,9 @@ HTTP API (JSON body, `Content-Type: application/json` required): `/api/jog` `{"j
 `/api/plan_tcp` `{"tcp_name": "gripper_tip", "x_mm": 100, "y_mm": 0, "z_mm": 200}`,
 `/api/execute` `{"plan_id": "..."}`,
 `/api/home` `{"joint": "joint1"}`, `/api/stop`, `/api/unlock`,
+`/api/motors` `{"enable": true|false}` (bridge `~/motors`; hardware only, refused while a plan executes),
+`/api/board_config` `{"yaml": "..."}` (saves `board_config_path` and calls bridge `~/push_config`;
+the file is restored if the board rejects it; `GET /api/board_config` returns the file),
 `/api/joy` `{"axes": [...], "buttons": [...]}`; `GET /state` returns everything shown on the page;
 `GET /camera.mjpg` / `GET /camera.jpg` serve the USB camera, `GET /camera2.mjpg` / `GET /camera2.jpg` the phone camera.
 
@@ -252,8 +259,10 @@ executed once within 120 seconds; execution is rejected if the current joints
 have moved from the plan's start. STOP cancels the action and stops the controller.
 The panel plans at 10 % velocity/acceleration scaling on hardware and 30 % in simulation
 (`web_viewer` parameters `max_velocity_scaling`/`max_acceleration_scaling`, set by the launch).
-The disclosed **Direct movement — no collision checking** action uses the same complete
-target pose as planning and sends it directly; a sent command does not confirm arrival.
+**Move all to targets** (next to Preview / Execute; hidden in the Gazebo demo) uses the same
+complete target pose as planning and sends it directly via `/api/goto` → `joint_command`:
+all joints move together at the board's move speed, with no collision checking; a sent
+command does not confirm arrival. It is disabled while the motors are reported disabled.
 Use **Use current angles** before changing individual joints. A blank target field
 defaults to that joint's current angle (filled into the field) only when joint state
 is fresh (connected, at most 2 s old, all joints finite) and within the joint limits;
@@ -310,7 +319,10 @@ it serves the same action name, so MoveIt's controller configuration is shared.
 
 The default model is `arm_concept.urdf.xacro`, which uses the meshes exported from
 Blender. Pass `model:=arm.urdf.xacro` to either launch file to inspect the original
-primitive model. Both models retain the same joint names, axes and limits.
+primitive model. Both models retain the same joint names, axes and limits. The joint limits
+are xacro args (`urdf/joint_limits.xacro`); `arm.launch.py` sets them from the NanoBee
+config.yaml `joints.jointN.min_deg`/`max_deg` (launch argument `board_config`), so planning and
+the board use the same range. Relaunch after changing them.
 
 For physics and controller testing, launch with `simulator:=gazebo`. See the
 [Gazebo guide](09-gazebo.md) for the tabletop scene, joint jog, and TCP approach task.
@@ -321,5 +333,6 @@ For physics and controller testing, launch with `simulator:=gazebo`. See the
   board). Convert only in the bridge.
 * Keep protocol logic free of ROS imports (testable with plain `pytest`).
 * `colcon build --symlink-install` + `colcon test` before each commit.
-* One source of truth per limit: URDF for planning; the board's config.yaml for steps, speeds
-  and soft limits (NanoBee is the last guard; the bridge rejects goals that violate either).
+* One source of truth per limit: the board's config.yaml for steps, speeds and joint ranges
+  (`min_deg`/`max_deg` become the URDF limits at launch); URDF velocities for planning
+  (NanoBee is the last guard; the bridge rejects goals that violate either).

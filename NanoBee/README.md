@@ -64,7 +64,8 @@ one-list-per-key form is still accepted):
 | `joints.jointN.idle_disable`, `motion.idle_timeout_ms` | switch the driver off after this long at rest (cooler, less power); wakes on the next move, keeps the home reference (status `O:`) |
 | `joints.jointN.homing` | `none`, `edge` (switch = `home_offset_deg`) or `center` (switch hit from both sides, middle = `home_offset_deg`) |
 | `joints.jointN.homing_dir` | direction of the first approach to the switch |
-| `joints.soft_limits`, `jointN.min_deg`, `jointN.max_deg` | moves outside the range are rejected (`err limit`) and jogs stop at the edge, once the joint is homed or set with `Z` |
+| `joints.jointN.homing_speed`, `homing_max_travel` | optional per-joint homing seek speed (steps/s) and search distance (steps); `0` = `homing.speed` / `homing.max_travel` |
+| `joints.soft_limits`, `jointN.min_deg`, `jointN.max_deg` | moves outside the range are rejected (`err limit`) and jogs stop at the edge, once the joint is homed or set with `Z`. `arm.launch.py` also uses min/max as the ROS (URDF) joint limits – relaunch after changing them |
 | `homing.enabled` | `false` rejects `H` |
 
 ## 6. Protocol (USB serial 115200 or `GET /cmd?c=...`)

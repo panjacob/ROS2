@@ -3,11 +3,14 @@
   ros2 launch arm_start arm.launch.py                       # joint simulator + web panel + RViz
   ros2 launch arm_start arm.launch.py use_hardware:=true    # real arm through NanoBee
   ros2 launch arm_start arm.launch.py simulator:=gazebo     # Gazebo table + banana
-  ros2 launch arm_start arm.launch.py camera:=false         # without the USB camera
+  ros2 launch arm_start arm.launch.py camera:=false         # without any camera
   ros2 launch arm_start arm.launch.py camera2:=false        # without the phone camera (Telescope)
   ros2 launch arm_start arm.launch.py camera_width:=640 camera_height:=480  # native Linux host
 
 Web page (state, cameras, jog, go-to, homing, gamepad) at http://localhost:8080 (web_port:=...).
+With use_hardware:=true it also edits NanoBee/NanoBeeDriver/config.yaml (board_config:=...) and
+sends it to the board. The joint limits (joints.jointN.min_deg/max_deg) of that file are the URDF
+joint limits in every mode (web page, MoveIt, simulators); changes take effect on relaunch.
 A gamepad controls the simple simulator and hardware (browser -> /joy -> joy_teleop -> /jog).
 Gazebo supports previewed plans, joint jogging and STOP.
 MoveIt executes plans through /arm_controller/follow_joint_trajectory, served by the simulator
@@ -15,7 +18,9 @@ or, with use_hardware:=true, by the NanoBee bridge (planned at 0.1 speed scaling
 """
 
 import os
+from pathlib import Path
 
+import launch.logging
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, ExecuteProcess, GroupAction,
@@ -30,6 +35,35 @@ from launch_ros.substitutions import FindPackagePrefix, FindPackageShare
 from moveit_configs_utils import MoveItConfigsBuilder
 
 
+def _board_config_path(configured):
+    """NanoBee config.yaml edited on the web page; default: the workspace's NanoBee/ copy."""
+    if configured:
+        return os.path.abspath(os.path.expanduser(configured))
+    # <workspace>/install/arm_start/share/arm_start -> <workspace>
+    workspace = Path(get_package_share_directory('arm_start')).resolve().parents[3]
+    path = workspace / 'NanoBee' / 'NanoBeeDriver' / 'config.yaml'
+    return str(path) if path.is_file() else ''
+
+
+def _joint_limit_args(board_config):
+    """xacro args jointN_min_deg/max_deg from config.yaml, so the URDF (web page, MoveIt,
+    simulators, bridge) uses the board's soft limits. Empty if there is no usable file."""
+    from arm_nanobee_bridge.nanobee_protocol import ProtocolError, config_joint_limits
+    log = launch.logging.get_logger('arm.launch')
+    if not board_config:
+        log.warning('No NanoBee config.yaml found; joint limits from the URDF defaults.')
+        return []
+    try:
+        limits = config_joint_limits(Path(board_config).read_text(encoding='utf-8'))
+    except (OSError, UnicodeDecodeError, ProtocolError) as exc:
+        log.warning(f'{board_config}: {exc}; joint limits from the URDF defaults.')
+        return []
+    log.info('Joint limits from ' + board_config + ': ' + ', '.join(
+        f'joint{j + 1} [{lo:g}, {hi:g}]' for j, (lo, hi) in enumerate(limits)) + ' deg')
+    return [f' joint{j + 1}_{key}_deg:={value!r}'
+            for j, pair in enumerate(limits) for key, value in zip(('min', 'max'), pair)]
+
+
 def _launch(context):
     use_hardware = LaunchConfiguration('use_hardware')
     gazebo = LaunchConfiguration('simulator').perform(context) == 'gazebo'
@@ -38,6 +72,7 @@ def _launch(context):
     use_rviz = LaunchConfiguration('rviz')
     web_port = LaunchConfiguration('web_port')
     tcp_storage_path = LaunchConfiguration('tcp_storage_path')
+    board_config = _board_config_path(LaunchConfiguration('board_config').perform(context))
     model = LaunchConfiguration('model')
     controller_ns = '/arm_gazebo' if gazebo else PythonExpression([
         "'/nanobee_bridge' if '", use_hardware, "' == 'true' else '/arm_sim'"])
@@ -53,7 +88,7 @@ def _launch(context):
         [FindPackageShare('arm_start'), 'config', 'nanobee_bridge.yaml'])
     rviz_config = PathJoinSubstitution(
         [FindPackageShare('arm_description'), 'rviz', 'arm.rviz'])
-    xacro_command = ['xacro ', xacro_file]
+    xacro_command = ['xacro ', xacro_file, *_joint_limit_args(board_config)]
     gazebo_actions = []
     web_scene = {}
     if gazebo:
@@ -105,7 +140,8 @@ def _launch(context):
         package='arm_nanobee_bridge',
         executable='nanobee_bridge',
         name='nanobee_bridge',
-        parameters=[bridge_config, {'robot_description': robot_description}],
+        parameters=[bridge_config, {'robot_description': robot_description,
+                                    'config_path': board_config}],
         output='screen',
     )
     hardware = GroupAction(
@@ -116,19 +152,18 @@ def _launch(context):
         ],
     )
 
-    # Camera: attach the USB camera to WSL if needed; the node retries until frames arrive.
-    attach_camera = ExecuteProcess(
-        cmd=[PathJoinSubstitution(
-            [FindPackagePrefix('arm_start'), 'lib', 'arm_start', 'attach_board.sh']),
-            LaunchConfiguration('camera_device'), LaunchConfiguration('camera_usb_id')],
-        name='attach_camera',
-        output='screen',
-    )
+    # Camera: the node runs attach_camera.sh whenever the device is missing (start, replug, WSL
+    # restart): it loads the driver and attaches the USB camera to WSL, then the node opens it.
     camera_node = Node(
         package='arm_camera',
         executable='camera_node',
         name='camera',
         parameters=[{'device': LaunchConfiguration('camera_device'),
+                     'setup_command': ParameterValue([
+                         PathJoinSubstitution([FindPackagePrefix('arm_start'), 'lib', 'arm_start',
+                                               'attach_camera.sh']),
+                         ' ', LaunchConfiguration('camera_device'),
+                         ' ', LaunchConfiguration('camera_usb_id')], value_type=str),
                      'width': ParameterValue(LaunchConfiguration('camera_width'), value_type=int),
                      'height': ParameterValue(LaunchConfiguration('camera_height'), value_type=int),
                      'exposure': ParameterValue(
@@ -137,14 +172,14 @@ def _launch(context):
     )
     camera = GroupAction(
         condition=IfCondition(LaunchConfiguration('camera')),
-        actions=[
-            attach_camera,
-            RegisterEventHandler(OnProcessExit(target_action=attach_camera, on_exit=[camera_node])),
-        ],
+        actions=[camera_node],
     )
 
     # Second camera: phone through Telescope. WSL can't open Windows webcams, so the bridge runs on
     # Windows (WSL interop) and serves the camera as MJPEG; camera2 reads it and retries until it's up.
+    use_camera2 = PythonExpression([
+        "'", LaunchConfiguration('camera'), "' == 'true' and '",
+        LaunchConfiguration('camera2'), "' == 'true'"])
     camera2_bridge = ExecuteProcess(
         cmd=['bash', '-c',
              'command -v py.exe >/dev/null || { echo "py.exe not found: needs WSL with Windows '
@@ -156,8 +191,7 @@ def _launch(context):
         name='camera2_bridge',
         output='screen',
         condition=IfCondition(PythonExpression([
-            "'", LaunchConfiguration('camera2'), "' == 'true' and '",
-            LaunchConfiguration('camera2_bridge'), "' == 'true'"])),
+            use_camera2, " and '", LaunchConfiguration('camera2_bridge'), "' == 'true'"])),
     )
     camera2_node = Node(
         package='arm_camera',
@@ -167,7 +201,7 @@ def _launch(context):
                      'frame_id': 'camera2_link'}],
         remappings=[('camera/image_raw', 'camera2/image_raw'),
                     ('camera/image_raw/compressed', 'camera2/image_raw/compressed')],
-        condition=IfCondition(LaunchConfiguration('camera2')),
+        condition=IfCondition(use_camera2),
         output='screen',
     )
 
@@ -207,6 +241,7 @@ def _launch(context):
                 'bridge_ns': controller_ns,
                 'simulation': ParameterValue(simulation, value_type=bool),
                 'tcp_storage_path': tcp_storage_path,
+                'board_config_path': board_config,
                 'robot_description': robot_description,
                 'max_velocity_scaling': ParameterValue(plan_scaling, value_type=float),
                 'max_acceleration_scaling': ParameterValue(plan_scaling, value_type=float),
@@ -252,8 +287,14 @@ def generate_launch_description():
                               description='Xacro model from arm_description/urdf'),
         DeclareLaunchArgument('web_port', default_value='8080'),
         DeclareLaunchArgument('tcp_storage_path', default_value='~/.config/ros2_arm/tcps.json'),
-        DeclareLaunchArgument('camera', default_value='true',
-                              description='Start the USB camera (camera/image_raw[/compressed])'),
+        DeclareLaunchArgument('board_config', default_value='',
+                              description='NanoBee config.yaml edited on the web page and sent to '
+                                          'the board, also the source of the URDF joint limits; '
+                                          'empty = <workspace>/NanoBee/NanoBeeDriver/'
+                                          'config.yaml'),
+        DeclareLaunchArgument('camera', default_value='true', choices=['true', 'false'],
+                              description='Start the cameras; false disables both the USB camera '
+                                          '(camera/image_raw[/compressed]) and camera2'),
         DeclareLaunchArgument('camera_device',
                               default_value='/dev/v4l/by-id/usb-045e_USB20_Camera-video-index0',
                               description='V4L2 device of the camera'),

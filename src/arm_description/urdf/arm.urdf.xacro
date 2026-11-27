@@ -2,7 +2,8 @@
 <!--
   5-DOF 3D printed arm driven by an MKS TinyBee running FluidNC.
   Placeholder geometry (cylinders/boxes). Replace visuals with meshes from CAD
-  once parts are designed. Keep joint limits in sync with firmware/fluidnc/config.yaml.
+  once parts are designed. Joint limits come from joint_limits.xacro (args set by arm.launch.py
+  from NanoBee config.yaml).
 
   joint1 base yaw     -> FluidNC X
   joint2 shoulder     -> FluidNC Y
@@ -12,6 +13,7 @@
 -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="printed_arm">
   <xacro:include filename="gazebo_control.xacro"/>
+  <xacro:include filename="joint_limits.xacro"/>
 
   <!-- Dimensions [m] -->
   <xacro:property name="base_h"     value="0.080"/>
@@ -90,11 +92,11 @@
   <xacro:arm_segment name="link4" length="${wrist_len}"  mat="pla_grey"   mass="0.10"/>
   <xacro:arm_segment name="link5" length="${flange_len}" mat="pla_orange" mass="0.05"/>
 
-  <xacro:rev_joint name="joint1" parent="base_link" child="link1" z="${base_h}"     axis="0 0 1" lower="${-170*deg}" upper="${170*deg}" vel="1.0"/>
-  <xacro:rev_joint name="joint2" parent="link1"     child="link2" z="${shoulder_h}" axis="0 1 0" lower="${-90*deg}"  upper="${90*deg}"  vel="0.5"/>
-  <xacro:rev_joint name="joint3" parent="link2"     child="link3" z="${upper_len}"  axis="0 1 0" lower="${-135*deg}" upper="${135*deg}" vel="0.7"/>
-  <xacro:rev_joint name="joint4" parent="link3"     child="link4" z="${fore_len}"   axis="0 1 0" lower="${-100*deg}" upper="${100*deg}" vel="1.0"/>
-  <xacro:rev_joint name="joint5" parent="link4"     child="link5" z="${wrist_len}"  axis="0 0 1" lower="${-180*deg}" upper="${180*deg}" vel="1.0"/>
+  <xacro:rev_joint name="joint1" parent="base_link" child="link1" z="${base_h}"     axis="0 0 1" lower="${joint1_min_deg*deg}" upper="${joint1_max_deg*deg}" vel="1.0"/>
+  <xacro:rev_joint name="joint2" parent="link1"     child="link2" z="${shoulder_h}" axis="0 1 0" lower="${joint2_min_deg*deg}" upper="${joint2_max_deg*deg}" vel="0.5"/>
+  <xacro:rev_joint name="joint3" parent="link2"     child="link3" z="${upper_len}"  axis="0 1 0" lower="${joint3_min_deg*deg}" upper="${joint3_max_deg*deg}" vel="0.7"/>
+  <xacro:rev_joint name="joint4" parent="link3"     child="link4" z="${fore_len}"   axis="0 1 0" lower="${joint4_min_deg*deg}" upper="${joint4_max_deg*deg}" vel="1.0"/>
+  <xacro:rev_joint name="joint5" parent="link4"     child="link5" z="${wrist_len}"  axis="0 0 1" lower="${joint5_min_deg*deg}" upper="${joint5_max_deg*deg}" vel="1.0"/>
 
   <link name="tool0"/>
   <joint name="link5_to_tool0" type="fixed">

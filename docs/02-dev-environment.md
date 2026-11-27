@@ -145,18 +145,20 @@ NanoBeeDriver). Detach with `usbipd detach --busid 2-3`.
 ### 2.4.1 USB camera (Microsoft LifeCam VX-6000)
 
 The camera (`045e:00f4`, Sonix SN9C20x + OV9650) has no driver in Windows 11 nor in Microsoft's
-WSL kernel, so it is used from WSL with an out-of-tree `gspca_sn9c20x` module:
+WSL kernel, so it is used from WSL with an out-of-tree `gspca_sn9c20x` module. This is automatic:
+whenever the camera device is missing (launch, replug, WSL restart), `camera_node` runs
+[attach_camera.sh](../src/arm_start/scripts/attach_camera.sh), which
 
-```powershell
-usbipd bind --hardware-id 045e:00f4          # once, PowerShell as admin
-```
+1. loads the driver ([camera_driver.sh](../src/arm_start/scripts/camera_driver.sh)). WSL resets
+   `/lib/modules` on restart, so the module is cached in `~/.cache/arm_camera/<kernel>/` and loaded
+   with `insmod` as root through `wsl.exe -u root` (no sudo password). After a WSL kernel update it is
+   rebuilt once from `~/wsl-kernel` (a few minutes; the log says so).
+2. attaches the camera with `usbipd.exe attach --wsl --hardware-id 045e:00f4`. If the camera is not
+   shared yet (first use, or another USB port), it adds a usbipd `AutoBind` policy for its vid:pid:
+   one Windows admin prompt, once ever.
 
-```bash
-tools/wsl_camera_driver.sh                   # once, and again after every WSL kernel update
-```
-
-`arm.launch.py` then attaches the camera automatically (same `attach_board.sh`) and starts
-`arm_camera` (`camera:=false` to disable). The image is on the web page and on `/camera/image_raw`.
+Manual: `tools/wsl_camera_driver.sh [--rebuild]`, `ros2 run arm_start attach_camera.sh`.
+`camera:=false` disables both cameras. The image is on the web page and on `/camera/image_raw`.
 
 - Over usbipd only the camera's JPEG mode delivers complete frames (the node forces `fourcc: JPEG`),
   and only 320×240 streams reliably (steady ~17 fps); 640×480 stalls or stutters, so 320×240 is the

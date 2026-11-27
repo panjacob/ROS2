@@ -1,6 +1,7 @@
 # NanoBee settings for the 5-joint arm. Firmware units: steps, steps/s, steps/s^2.
 # One block per joint: joint1 = X socket ... joint5 = E1 socket. 200 steps x 32 microsteps / 360 deg, direct drive.
-# Push with:  NanoBee(port="COM6").push_config("config.yaml")   or the web page -> Settings -> Save.
+# Push with:  NanoBee(port="COM6").push_config("config.yaml")   or the web page -> Settings -> Save
+#             or, with ROS (use_hardware:=true), http://localhost:8080 -> Board settings -> Send to board.
 # The ROS bridge (arm_nanobee_bridge) reads these values from the board at startup ("SETTINGS?").
 wifi:
   mode: ap              # ap = board makes its own network, sta = join existing network
@@ -25,53 +26,57 @@ joints:
   #   homing          none | edge | center (edge/center need an endstop: joint1..joint3)
   #   homing_dir      direction of the first approach to the switch (-1 / 1)
   #   home_offset_deg angle assigned to the home reference (switch / switch middle)
+  #   homing_speed    optional, steps/s seek speed for this joint (slow touch = / 5), 0 = homing.speed
+  #   homing_max_travel optional, steps to search before giving up, 0 = homing.max_travel
   #   min_deg/max_deg soft limits (URDF limits + 5 deg)
   joint1:                # base yaw
-    steps_per_deg: 17.7778
-    max_speed: 6400
-    max_accel: 53333
+    steps_per_deg: 284.4448
+    max_speed: 12800
+    max_accel: 106666
     dir_invert: true
     idle_disable: true
     homing: center
     homing_dir: -1
     home_offset_deg: 0
-    min_deg: -175
-    max_deg: 175
+    min_deg: -180
+    max_deg: 180
   joint2:                # shoulder
-    steps_per_deg: 17.7778
-    max_speed: 6400
-    max_accel: 53333
+    steps_per_deg: 133.3335
+    max_speed: 640
+    max_accel: 533
     dir_invert: false
     idle_disable: false
-    homing: none
-    homing_dir: -1
-    home_offset_deg: 0
-    min_deg: -95
-    max_deg: 95
+    homing: edge            # Y endstop on one side: start at the top (0 deg), creep toward +90 deg
+    homing_dir: 1
+    home_offset_deg: 90     # angle of the switch; adjust so the reported angle matches the real one
+    homing_speed: 400       # 3 deg/s seek, slow touch 0.75 deg/s (min_speed)
+    homing_max_travel: 12667 # 95 deg from the top without the switch = error
+    min_deg: -90
+    max_deg: 90
   joint3:                # elbow
-    steps_per_deg: 17.7778
+    steps_per_deg: 8.8889
     max_speed: 6400
     max_accel: 53333
     dir_invert: false
-    idle_disable: false
+    idle_disable: true
     homing: none
     homing_dir: -1
     home_offset_deg: 0
     min_deg: -140
     max_deg: 140
   joint4:                # wrist pitch
-    steps_per_deg: 17.7778
+    steps_per_deg: 8.8889
     max_speed: 6400
     max_accel: 53333
     dir_invert: false
-    idle_disable: false
+    idle_disable: true
     homing: none
     homing_dir: -1
     home_offset_deg: 0
-    min_deg: -105
-    max_deg: 105
+    min_deg: -360
+    max_deg: 360
   joint5:                # wrist roll
-    steps_per_deg: 17.7778
+    steps_per_deg: 8.8889
     max_speed: 6400
     max_accel: 53333
     dir_invert: false

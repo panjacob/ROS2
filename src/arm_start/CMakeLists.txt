@@ -13,7 +13,7 @@ if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/config")
 endif()
 
 install(
-  PROGRAMS scripts/attach_board.sh
+  PROGRAMS scripts/attach_board.sh scripts/attach_camera.sh scripts/camera_driver.sh
   DESTINATION lib/${PROJECT_NAME}
 )
 

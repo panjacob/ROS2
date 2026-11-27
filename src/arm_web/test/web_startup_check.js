@@ -73,6 +73,10 @@ async function main() {
   assert.ok(element('target_joint1'));
   assert.equal(element('jogPlus_joint1').disabled, true);
   assert.equal(element('planButton').disabled, true);
+  assert.equal(element('motorsRow').hidden, true);
+  assert.equal(element('motorHeading').hidden, true);
+  assert.equal(element('motor_joint1'), null);
+  assert.equal(element('directButton').hidden, true);
   assert.equal(requests.length, 0);
 
   state.config.scene_ready = true;
@@ -105,6 +109,43 @@ async function main() {
   assert.equal(element('conn').textContent, 'connected');
   assert.equal(element('jogPlus_joint1').disabled, false);
   assert.equal(requests.length, 0);
+
+  // Real bridge: motor status column, Enable/Disable buttons and Move all to targets.
+  state.config.simulation = false;
+  state.config.direct_motion_available = true;
+  state.config.motors_control_available = true;
+  state.status = {motors_enabled: {value: true, age: 0}, motors_powered: {value: 'joint1,joint3', age: 0}};
+  await run('poll()');
+  assert.equal(element('motorsRow').hidden, false);
+  assert.equal(element('motorHeading').hidden, false);
+  assert.equal(element('motorsState').textContent, 'ENABLED');
+  assert.equal(element('motor_joint1').textContent, 'ON');
+  assert.equal(element('motor_joint2').textContent, 'sleep');
+  assert.equal(element('motorsEnable').disabled, true);
+  assert.equal(element('motorsDisable').disabled, false);
+  assert.equal(element('directButton').hidden, false);
+  assert.equal(element('directButton').disabled, false);
+  element('target_joint1').value = '10';
+  await run('moveDirectly()');
+  assert.equal(requests.at(-1).url, '/api/goto');
+  assert.equal(Object.keys(requests.at(-1).body).length, 6);
+  assert.equal(requests.at(-1).body.joint1, 10);
+  await run('setMotors(false)');
+  assert.deepEqual(requests.at(-1), {url: '/api/motors', body: {enable: false}});
+  state.status.motors_enabled.value = false;
+  state.status.motors_powered.value = '';
+  await run('poll()');
+  assert.equal(element('motorsState').textContent, 'DISABLED');
+  assert.equal(element('motor_joint1').textContent, 'OFF');
+  assert.equal(element('motorsEnable').disabled, false);
+  assert.equal(element('motorsDisable').disabled, true);
+  assert.equal(element('directButton').disabled, true);
+  await run('setMotors(true)');
+  assert.deepEqual(requests.at(-1), {url: '/api/motors', body: {enable: true}});
+  state.status.motors_enabled.age = 5;
+  await run('poll()');
+  assert.equal(element('motorsState').textContent, 'unknown');
+  assert.equal(element('motor_joint1').textContent, '–');
   console.log('PASS: initial empty DOM, delayed ROS state, new rows and HTTP reconnect');
 }
 

@@ -29,6 +29,8 @@ struct Settings {
     int8_t     homingDir[NUM_JOINTS] = { -1, -1, -1, -1, -1 };
     HomingMode homing[NUM_JOINTS]    = { HOME_NONE, HOME_NONE, HOME_NONE, HOME_NONE, HOME_NONE };
     float      homeOffsetDeg[NUM_JOINTS] = { 0, 0, 0, 0, 0 };  // position assigned at the home reference
+    float      jointHomingSpeed[NUM_JOINTS]     = { 0, 0, 0, 0, 0 };  // steps/s, 0 = homing.speed
+    int32_t    jointHomingMaxTravel[NUM_JOINTS] = { 0, 0, 0, 0, 0 };  // steps, 0 = homing.max_travel
     bool       softLimits = true;  // active per joint once it is referenced (homed or Z)
     float      minDeg[NUM_JOINTS] = { -180, -180, -180, -180, -180 };
     float      maxDeg[NUM_JOINTS] = { 180, 180, 180, 180, 180 };

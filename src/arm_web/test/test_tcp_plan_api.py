@@ -191,6 +191,103 @@ def test_jog_rejects_unknown_joints_and_nonfinite_speed(viewer, values):
     assert not viewer.jog(values)[0]
 
 
+class MotorsClient:
+    srv_name = '/nanobee_bridge/motors'
+
+    def __init__(self):
+        self.requests = []
+        self.ready = True
+
+    def service_is_ready(self):
+        return self.ready
+
+    def call_async(self, request):
+        self.requests.append(request.data)
+        return future(SimpleNamespace(success=True, message='Motors ' + ('on' if request.data else 'off')))
+
+
+def test_motors_endpoint_calls_bridge_and_invalidates_plan(viewer):
+    viewer.simulation = False
+    viewer._motors_client = MotorsClient()
+    assert viewer.plan_tcp(goal(viewer))[0]
+    assert viewer.motors({'enable': False}) == (True, 'Motors off')
+    assert viewer._plan_record is None
+    assert viewer.motors({'enable': True})[0]
+    assert viewer._motors_client.requests == [False, True]
+    for body in ({}, {'enable': 'no'}, {'enable': 1}):
+        assert not viewer.motors(body)[0]
+    viewer._motors_client.ready = False
+    assert not viewer.motors({'enable': True})[0]
+
+
+def test_motors_rejected_in_simulation_and_during_execution(viewer):
+    viewer._motors_client = MotorsClient()
+    viewer.simulation = True
+    assert not viewer.motors({'enable': False})[0]
+    viewer.simulation = False
+    viewer._execution_pending = True
+    assert not viewer.motors({'enable': False})[0]
+    viewer._execution_pending = False
+    viewer._plan_status['state'] = 'executing'
+    assert not viewer.motors({'enable': False})[0]
+    assert viewer._motors_client.requests == []
+
+
+class PushConfigClient:
+    srv_name = '/nanobee_bridge/push_config'
+
+    def __init__(self, path, success=True):
+        self.path, self.success, self.uploaded = path, success, []
+
+    def service_is_ready(self):
+        return True
+
+    def call_async(self, _request):
+        self.uploaded.append(Path(self.path).read_text())
+        return future(SimpleNamespace(success=self.success, message='board says ' + str(self.success)))
+
+
+def test_board_config_load_save_and_push(viewer, tmp_path):
+    path = tmp_path / 'config.yaml'
+    path.write_text('motion:\n  blend: true\n')
+    viewer.simulation = False
+    viewer.board_config_path = str(path)
+    viewer._board_config_lock = threading.Lock()
+    viewer._push_config_client = PushConfigClient(path)
+    assert viewer.board_config() == (True, f'Loaded {path}', {'yaml': 'motion:\n  blend: true\n',
+                                                              'path': str(path)})
+    assert viewer.plan_tcp(goal(viewer))[0]
+    ok, message = viewer.push_board_config({'yaml': 'motion:\n  blend: false\n'})
+    assert ok and 'board says True' in message
+    assert viewer._push_config_client.uploaded == ['motion:\n  blend: false\n']
+    assert path.read_text() == 'motion:\n  blend: false\n'
+    assert viewer._plan_record is None
+
+    viewer._push_config_client.success = False
+    ok, message = viewer.push_board_config({'yaml': 'bogus: 1\n'})
+    assert not ok and 'board says False' in message
+    assert viewer._push_config_client.uploaded[-1] == 'bogus: 1\n'
+    assert path.read_text() == 'motion:\n  blend: false\n'  # restored
+
+
+def test_board_config_rejected_without_writing(viewer, tmp_path):
+    path = tmp_path / 'config.yaml'
+    path.write_text('a: 1\n')
+    viewer.board_config_path = str(path)
+    viewer._board_config_lock = threading.Lock()
+    viewer._push_config_client = PushConfigClient(path)
+    viewer.simulation = True
+    assert not viewer.push_board_config({'yaml': 'b: 2\n'})[0]
+    viewer.simulation = False
+    for body in ({}, {'yaml': ''}, {'yaml': 3}, {'yaml': 'x' * 40000}):
+        assert not viewer.push_board_config(body)[0]
+    viewer._execution_pending = True
+    assert not viewer.push_board_config({'yaml': 'b: 2\n'})[0]
+    assert path.read_text() == 'a: 1\n' and viewer._push_config_client.uploaded == []
+    viewer.board_config_path = ''
+    assert not viewer.board_config()[0]
+
+
 @pytest.mark.parametrize('name', ['tool0', 'bent_tool'])
 def test_position_plan_uses_collision_planner_and_verified_fk(viewer, name):
     viewer.tcps.select(name)

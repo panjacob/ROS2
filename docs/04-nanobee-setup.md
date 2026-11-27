@@ -79,8 +79,9 @@ The older form with one list per key (`steps_per_deg: [a, b, c, d, e]`) is still
 | `joints.jointN.max_speed`, `max_accel` | in steps/s, steps/s² (6400 = 360°/s) |
 | `joints.jointN.dir_invert` | flip a joint's direction |
 | `joints.jointN.idle_disable` | `true`: the joint's driver switches off after `motion.idle_timeout_ms` at rest (cooler motors/drivers, less power) and wakes on the next move. Position and home reference are kept, so use it only for joints that hold their pose unpowered (now joint1 + joint5) |
-| `joints.jointN.homing` | `none`, `edge` (switch = `home_offset_deg`) or `center` (switch hit from both sides, middle = `home_offset_deg`); joint1 = `center`, the others `none` |
+| `joints.jointN.homing` | `none`, `edge` (switch = `home_offset_deg`) or `center` (switch hit from both sides, middle = `home_offset_deg`); joint1 = `center`, joint2 = `edge`, the others `none` |
 | `joints.jointN.homing_dir`, `home_offset_deg` | direction of the first approach; angle given to the home reference |
+| `joints.jointN.homing_speed`, `homing_max_travel` | optional per-joint seek speed (steps/s, slow touch = speed / 5) and search distance (steps); `0` = use `homing.speed` / `homing.max_travel` |
 | `joints.soft_limits`, `jointN.min_deg`, `jointN.max_deg` | global switch; range per joint, enforced once the joint is referenced (homed or set with `Z`) |
 | `motion.blend` | `true`: timed `T` segments run back to back without stopping (needed for smooth ROS trajectories) |
 | `motion.default_speed`, `default_accel`, `jog_timeout_ms` | `M` defaults, jog watchdog |
@@ -91,7 +92,12 @@ The older form with one list per key (`steps_per_deg: [a, b, c, d, e]`) is still
 Upload (the board must be idle; applied at once, Wi-Fi changes need a reboot):
 
 * web page → *Settings* → *Save & apply*, or
-* `NanoBee(port="COM6", config="config.yaml").push_config()` from `NanoBee/NanoBeeDriver`.
+* `NanoBee(port="COM6", config="config.yaml").push_config()` from `NanoBee/NanoBeeDriver`, or
+* with ROS running (`use_hardware:=true`): the ROS web page (http://localhost:8080) → *Board settings
+  (config.yaml)* → edit → **Send to board**. It saves `NanoBee/NanoBeeDriver/config.yaml` (launch
+  argument `board_config:=...` for another file), uploads it through the bridge over USB and reloads
+  the bridge settings; if the board rejects it the file is left unchanged. Same without the page:
+  `ros2 service call /nanobee_bridge/push_config std_srvs/srv/Trigger`.
 
 Check with `SETTINGS?` (effective values, defaults filled in). With ROS running, call
 `ros2 service call /nanobee_bridge/reload_settings std_srvs/srv/Trigger` afterwards (the bridge
@@ -133,11 +139,17 @@ Positions are absolute steps, speeds steps/s.
    the other side; the middle becomes `home_offset_deg`. Watch for `# homed 0` or
    `# err home 0: ...` (e.g. switch not found within `max_travel`). Adjust `home_offset_deg` so
    the reported angle equals the real one (0° = URDF zero pose).
+   **Homing joint2** (`edge`, Y-MIN, GPIO 32) – the switch sits on one side only. Start with the
+   arm at the top (0°), then `H 1`: it creeps toward +90° (`homing_dir: 1`, `homing_speed: 400`
+   = 3°/s), backs off, touches the switch slowly and sets that point to `home_offset_deg` (90).
+   `homing_max_travel` (12667 steps = 95°) stops it with `# err home 1: endstop not found`.
+   If it moves away from the switch, flip `homing_dir`.
 6. **Soft limits** – `min_deg` / `max_deg` apply once a joint is referenced: moves outside are
-   rejected (`err limit`), jogs stop at the edge. They are the last guard behind the URDF limits
-   (currently the URDF range widened by 5° on each side) and must stay inside the mechanical range.
+   rejected (`err limit`), jogs stop at the edge. `arm.launch.py` also uses them as the URDF joint
+   limits (web page, MoveIt, simulators; read at launch, so relaunch after changing them). They
+   must stay inside the mechanical range.
 
-## 4.7 Joints without endstops (joint2…joint5)
+## 4.7 Joints without endstops (joint3…joint5)
 
 `homing: none` – `H` skips them and their soft limits stay off until they are zeroed. Before
 using them:

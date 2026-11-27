@@ -78,6 +78,8 @@ static bool applyJointKey(int j, const String& k, const String& v, Settings& s) 
         return true;
     }
     if (k == "home_offset_deg") return toFloat(v, s.homeOffsetDeg[j], -100000, 100000);
+    if (k == "homing_speed") return toFloat(v, s.jointHomingSpeed[j], 0, hz);
+    if (k == "homing_max_travel") return toInt(v, s.jointHomingMaxTravel[j], 0, 100000000);
     if (k == "min_deg") return toFloat(v, s.minDeg[j], -100000, 100000);
     if (k == "max_deg") return toFloat(v, s.maxDeg[j], -100000, 100000);
     return false;
@@ -236,6 +238,8 @@ String toYaml(const Settings& s) {
         y += "    homing: " + String(MODES[s.homing[j]]) + "\n";
         y += "    homing_dir: " + String(s.homingDir[j]) + "\n";
         y += "    home_offset_deg: " + String(s.homeOffsetDeg[j], 3) + "\n";
+        y += "    homing_speed: " + String(s.jointHomingSpeed[j], 0) + "\n";
+        y += "    homing_max_travel: " + String(s.jointHomingMaxTravel[j]) + "\n";
         y += "    min_deg: " + String(s.minDeg[j], 3) + "\n";
         y += "    max_deg: " + String(s.maxDeg[j], 3) + "\n";
     }

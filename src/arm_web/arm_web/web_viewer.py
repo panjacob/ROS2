@@ -12,6 +12,11 @@ POST /api/home      {"joint": "joint1"}          endstop homing of one joint
 POST /api/stop      {}                           abort everything
 POST /api/unlock    {}                           enable the motors and re-arm execution;
                                                  fails unless the bridge confirms it
+POST /api/motors    {"enable": true|false}       enable / disable the motor drivers (bridge ~/motors)
+GET  /api/board_config                           {"yaml": "...", "path": "..."} from board_config_path
+POST /api/board_config {"yaml": "..."}           save board_config_path and upload it to the board
+                                                 (bridge ~/push_config); the file is restored if
+                                                 the board rejects it
 POST /api/joy       {"axes": [...], "buttons": [...]}  browser gamepad -> /joy
 POST /api/tcp/save  {"name": "gripper", "x_mm": 0, ..., "yaw_deg": 0}
 POST /api/tcp/select {"name": "gripper"}
@@ -44,7 +49,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import CompressedImage, JointState, Joy
 from std_msgs.msg import Bool, String
-from std_srvs.srv import Trigger
+from std_srvs.srv import SetBool, Trigger
 from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
 
 from arm_web.tcp_registry import (
@@ -59,6 +64,8 @@ STATUS_TOPICS = {
     'limit_switches': String,
     'homing_status': String,
     'trajectory_status': String,
+    'motors_enabled': Bool,
+    'motors_powered': String,
 }
 LATCHED_STATUS = ('homing_status', 'trajectory_status')
 
@@ -81,6 +88,7 @@ PLAN_ERRORS = {
 
 PLAN_TTL = 120.0
 CAMERA_STALE_S = 2.0
+MAX_BOARD_CONFIG_CHARS = 32768
 
 
 class CameraFrames:
@@ -211,7 +219,7 @@ class WebViewer(Node):
         self.require_scene_ready = bool(self.declare_parameter('require_scene_ready', False).value)
         self.scene_ready = not self.require_scene_ready
         self.demo_target_mm = list(self.declare_parameter('demo_target_mm', [0.0, 0.0, 0.0]).value)
-        configured_home_joints = self.declare_parameter('home_joints', ['joint1']).value
+        configured_home_joints = self.declare_parameter('home_joints', ['joint1', 'joint2']).value
         self.home_joints = [] if self.simulation else list(configured_home_joints)
         self.max_jog_speed = float(self.declare_parameter('max_jog_speed', 360.0).value)
         self.reference_frame = self.declare_parameter('reference_frame', 'world').value
@@ -276,6 +284,11 @@ class WebViewer(Node):
             'stop': self.create_client(Trigger, f'{bridge_ns}/stop'),
             'unlock': self.create_client(Trigger, f'{bridge_ns}/unlock'),
         }
+        self._motors_client = self.create_client(SetBool, f'{bridge_ns}/motors')
+        self.board_config_path = os.path.expanduser(
+            str(self.declare_parameter('board_config_path', '').value or ''))
+        self._board_config_lock = threading.Lock()
+        self._push_config_client = self.create_client(Trigger, f'{bridge_ns}/push_config')
         for joint in self.home_joints:
             self._trigger_clients[f'home_{joint}'] = self.create_client(
                 Trigger, f'{bridge_ns}/home_{joint}')
@@ -289,6 +302,8 @@ class WebViewer(Node):
             'simulation': self.simulation,
             'execution_available': True,
             'direct_motion_available': self.direct_motion_available,
+            'motors_control_available': not self.simulation,
+            'board_config_available': not self.simulation and bool(self.board_config_path),
             'jog_available': self.jog_available,
             'jog_active': time.monotonic() < self._jog_until,
             'scene_ready': self.scene_ready,
@@ -768,6 +783,90 @@ class WebViewer(Node):
         res = future.result()
         return bool(res.success), res.message
 
+    def motors(self, body, timeout=5.0):
+        if getattr(self, 'simulation', False):
+            return False, 'Motor enable/disable is only available with the NanoBee bridge.'
+        enable = body.get('enable') if isinstance(body, dict) else None
+        if not isinstance(enable, bool):
+            return False, 'motors requires {"enable": true|false}'
+        with self._plan_state_lock:
+            if self._execution_pending or self._plan_status['state'] == 'executing':
+                return False, 'A plan is executing; use STOP first.'
+            self._invalidate_plan_locked('Motors changed; preview again.')
+        client = self._motors_client
+        if not client.service_is_ready():
+            return False, f'service {client.srv_name} not available (bridge running?)'
+        res = self._wait_future(client.call_async(SetBool.Request(data=enable)), timeout)
+        if res is None:
+            return False, 'timeout waiting for bridge'
+        return bool(res.success), res.message
+
+    def board_config(self):
+        path = self.board_config_path
+        if not path:
+            return False, 'board_config_path is not set', {}
+        try:
+            with open(path, encoding='utf-8', newline='') as f:
+                text = f.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            return False, f'cannot read {path}: {exc}', {}
+        return True, f'Loaded {path}', {'yaml': text, 'path': path}
+
+    def push_board_config(self, body, timeout=10.0):
+        if self.simulation:
+            return False, 'Board config upload is only available with the NanoBee bridge.'
+        path = self.board_config_path
+        if not path:
+            return False, 'board_config_path is not set'
+        text = body.get('yaml')
+        if not isinstance(text, str) or not text.strip():
+            return False, 'board_config requires {"yaml": "<config.yaml text>"}'
+        if len(text) > MAX_BOARD_CONFIG_CHARS:
+            return False, f'config is longer than {MAX_BOARD_CONFIG_CHARS} characters'
+        client = self._push_config_client
+        if not client.service_is_ready():
+            return False, f'service {client.srv_name} not available (bridge running?)'
+        if not self._board_config_lock.acquire(blocking=False):
+            return False, 'Another config upload is in progress.'
+        try:
+            with self._plan_state_lock:
+                if self._execution_pending or self._plan_status['state'] == 'executing':
+                    return False, 'A plan is executing; use STOP first.'
+                self._invalidate_plan_locked('Board settings changed; preview again.')
+            try:
+                with open(path, encoding='utf-8', newline='') as f:
+                    previous = f.read()
+            except FileNotFoundError:
+                previous = None
+            except (OSError, UnicodeDecodeError) as exc:
+                return False, f'cannot read {path}: {exc}'
+            try:
+                _write_text(path, text)
+            except OSError as exc:
+                return False, f'cannot write {path}: {exc}'
+            res = self._wait_future(client.call_async(Trigger.Request()), timeout)
+            if res is None:
+                return False, (f'Saved {path}, but the bridge did not answer in time; '
+                               'check the board before sending again.')
+            if not res.success:
+                try:
+                    if previous is None:
+                        os.remove(path)
+                    else:
+                        _write_text(path, previous)
+                except OSError as exc:
+                    return False, f'{res.message} (and restoring {path} failed: {exc})'
+                return False, f'{res.message} ({os.path.basename(path)} left unchanged)'
+            return True, (f'Saved {path}. {res.message} Changed joint limits (min_deg/max_deg) '
+                          'reach the planner and this page after relaunching arm.launch.py.')
+        finally:
+            self._board_config_lock.release()
+
+
+def _write_text(path, text):
+    with open(path, 'w', encoding='utf-8', newline='') as f:
+        f.write(text)
+
 
 def make_handler(node, page_path):
 
@@ -808,6 +907,9 @@ def make_handler(node, page_path):
                 self._stream_camera(node.camera)
             elif path == '/camera2.mjpg':
                 self._stream_camera(node.camera2)
+            elif path == '/api/board_config':
+                ok, message, extra = node.board_config()
+                self._send(200 if ok else 400, json.dumps({'ok': ok, 'message': message, **extra}))
             else:
                 self._send(404, '{"error": "not found"}')
 
@@ -877,6 +979,10 @@ def make_handler(node, page_path):
                 return node.stop()
             if path == '/api/unlock':
                 return node.call('unlock')
+            if path == '/api/motors':
+                return node.motors(body)
+            if path == '/api/board_config':
+                return node.push_board_config(body)
             return False, 'unknown endpoint'
 
     return Handler

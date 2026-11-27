@@ -122,14 +122,20 @@ static void jogHoming(int dir, float speed) {
     Motion::jogJoint(homeJoint, dir * speed, cfg.homingAccel);
 }
 
+static float homeSpeed(int j) { return cfg.jointHomingSpeed[j] > 0 ? cfg.jointHomingSpeed[j] : cfg.homingSpeed; }
+
+static int32_t homeMaxTravel(int j) {
+    return cfg.jointHomingMaxTravel[j] > 0 ? cfg.jointHomingMaxTravel[j] : cfg.homingMaxTravel;
+}
+
 static void startTouch(int dir) {
     int j    = homeJoint;
     touchDir = dir;
     if (endstopHit(j)) {
-        moveJoint(j, jointPos(j) - dir * cfg.homingBackoff, cfg.homingSpeed);
+        moveJoint(j, jointPos(j) - dir * cfg.homingBackoff, homeSpeed(j));
         beginPhase(H_BACKOFF);
     } else {
-        jogHoming(dir, cfg.homingSpeed);
+        jogHoming(dir, homeSpeed(j));
         beginPhase(H_SEEK);
     }
 }
@@ -151,7 +157,7 @@ static void finishTouch(int32_t at) {
         firstTouch = at;
         touchNo    = 1;
         touchDir   = -touchDir;
-        jogHoming(touchDir, cfg.homingSpeed);
+        jogHoming(touchDir, homeSpeed(j));
         beginPhase(H_LEAVE);
         return;
     }
@@ -163,7 +169,7 @@ static void finishTouch(int32_t at) {
     } else {
         Motion::setPosition(j, offset);
     }
-    moveJoint(j, jointPos(j) - touchDir * cfg.homingBackoff, cfg.homingSpeed);
+    moveJoint(j, jointPos(j) - touchDir * cfg.homingBackoff, homeSpeed(j));
     beginPhase(H_RETRACT);
 }
 
@@ -175,14 +181,14 @@ static void homingTask() {
     if (travel < 0) travel = -travel;
     bool hit     = endstopHit(j);
     bool stopped = Motion::jointIdle(j);
-    bool tooFar  = travel > cfg.homingMaxTravel;
-    float slow   = cfg.homingSpeed / 5;
+    bool tooFar  = travel > homeMaxTravel(j);
+    float slow   = homeSpeed(j) / 5;
 
     switch (homePhase) {
         case H_SEEK:
             if (hit && travel >= seekGuard) {
                 Motion::haltJoint(j);
-                moveJoint(j, pos - touchDir * cfg.homingBackoff, cfg.homingSpeed);
+                moveJoint(j, pos - touchDir * cfg.homingBackoff, homeSpeed(j));
                 beginPhase(H_BACKOFF);
             } else if (tooFar) {
                 homeFail("endstop not found");
