@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<!--
+  Joint limits [deg], one xacro arg per bound. arm.launch.py passes the values from
+  NanoBee/NanoBeeDriver/config.yaml (joints.jointN.min_deg / max_deg), so the web page, MoveIt,
+  the simulators and the NanoBee bridge use the board's soft limits. The defaults apply when the
+  model is expanded without them (display.launch.py, plain xacro, tests).
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="joint1_min_deg" default="-170"/>
+  <xacro:arg name="joint1_max_deg" default="170"/>
+  <xacro:arg name="joint2_min_deg" default="-90"/>
+  <xacro:arg name="joint2_max_deg" default="90"/>
+  <xacro:arg name="joint3_min_deg" default="-135"/>
+  <xacro:arg name="joint3_max_deg" default="135"/>
+  <xacro:arg name="joint4_min_deg" default="-100"/>
+  <xacro:arg name="joint4_max_deg" default="100"/>
+  <xacro:arg name="joint5_min_deg" default="-180"/>
+  <xacro:arg name="joint5_max_deg" default="180"/>
+
+  <xacro:property name="joint1_min_deg" value="$(arg joint1_min_deg)"/>
+  <xacro:property name="joint1_max_deg" value="$(arg joint1_max_deg)"/>
+  <xacro:property name="joint2_min_deg" value="$(arg joint2_min_deg)"/>
+  <xacro:property name="joint2_max_deg" value="$(arg joint2_max_deg)"/>
+  <xacro:property name="joint3_min_deg" value="$(arg joint3_min_deg)"/>
+  <xacro:property name="joint3_max_deg" value="$(arg joint3_max_deg)"/>
+  <xacro:property name="joint4_min_deg" value="$(arg joint4_min_deg)"/>
+  <xacro:property name="joint4_max_deg" value="$(arg joint4_max_deg)"/>
+  <xacro:property name="joint5_min_deg" value="$(arg joint5_min_deg)"/>
+  <xacro:property name="joint5_max_deg" value="$(arg joint5_max_deg)"/>
+</robot>
