@@ -1,12 +1,3 @@
-usbipd attach --wsl --busid 2-1
-cd ~/ROS2/NanoBee
-pio run -t upload --upload-port /dev/ttyUSB0usbipd attach --wsl --busid 2-1
-
-
-
-cd ~/ROS2/NanoBee
-pio run -t upload --upload-port /dev/ttyUSB0
-
 # NanoBee – build & flash in VS Code
 
 Minimal robotic-arm firmware for the MKS TinyBee (ESP32).
@@ -34,10 +25,32 @@ Use the PlatformIO buttons in the bottom status bar, or the PlatformIO sidebar (
 | Serial monitor | 🔌 (plug) | `pio device monitor` |
 | Clean   | 🗑 (trash) | `pio run -t clean` |
 
-Upload picks the COM port automatically. If there are several ports, add `upload_port = COM5` (your port) to `platformio.ini`.
+Upload picks the serial port automatically. If there are several ports, pass it explicitly: `pio run -t upload --upload-port COM5` (Windows) or `--upload-port /dev/ttyUSB0` (WSL).
 
 If `pio` is not found in a normal terminal, use the PlatformIO terminal (sidebar > *New Terminal*) or the full path:
 `& "$env:USERPROFILE\.platformio\penv\Scripts\pio.exe" run`
+
+### Flashing from WSL
+
+WSL has no `COMx` ports – the board must be passed through with [usbipd-win](https://github.com/dorssel/usbipd-win)
+and then shows up as `/dev/ttyUSB0`.
+
+**Easiest:** `./upload.sh` (or `./upload.sh -m` to open the serial monitor afterwards) finds the CH340 board,
+binds/attaches it with usbipd if needed and uploads to the right `/dev/ttyUSB*`.
+
+Manual steps:
+
+1. Windows PowerShell (admin): `usbipd list` and note the CH340 bus id (e.g. `2-1`).
+   Once: `usbipd bind --busid 2-1`. After every replug: `usbipd attach --wsl --busid 2-1`.
+2. WSL: check `ls /dev/ttyUSB*`. If you get *permission denied*: `sudo usermod -aG dialout $USER`, then log in again.
+3. WSL:
+   ```
+   cd ~/ROS2/NanoBee
+   pio run -t upload --upload-port /dev/ttyUSB0
+   pio device monitor -p /dev/ttyUSB0
+   ```
+
+While attached to WSL the port is not available on Windows (and vice versa: `usbipd detach --busid 2-1`).
 
 > Flashing replaces whatever firmware is on the board. Keep the motor power off or the arm clear for the first start.
 

@@ -41,8 +41,8 @@ joints:
     min_deg: -180
     max_deg: 180
   joint2:                # shoulder
-    steps_per_deg: 100
-    max_speed: 640
+    steps_per_deg: 120
+    max_speed: 3000
     max_accel: 533
     dir_invert: false
     idle_disable: false
@@ -54,8 +54,8 @@ joints:
     min_deg: -90
     max_deg: 90
   joint3:                # elbow
-    steps_per_deg: 20
-    max_speed: 640
+    steps_per_deg: 43
+    max_speed: 3000
     max_accel: 5333
     dir_invert: false
     idle_disable: true
@@ -65,7 +65,7 @@ joints:
     min_deg: -140
     max_deg: 140
   joint4:                # wrist pitch
-    steps_per_deg: 8.8889
+    steps_per_deg: 48
     max_speed: 6400
     max_accel: 53333
     dir_invert: false
