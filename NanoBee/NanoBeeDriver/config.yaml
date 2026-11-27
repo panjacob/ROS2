@@ -41,7 +41,7 @@ joints:
     min_deg: -180
     max_deg: 180
   joint2:                # shoulder
-    steps_per_deg: 133.3335
+    steps_per_deg: 100
     max_speed: 640
     max_accel: 533
     dir_invert: false
@@ -54,9 +54,9 @@ joints:
     min_deg: -90
     max_deg: 90
   joint3:                # elbow
-    steps_per_deg: 8.8889
-    max_speed: 6400
-    max_accel: 53333
+    steps_per_deg: 20
+    max_speed: 640
+    max_accel: 5333
     dir_invert: false
     idle_disable: true
     homing: none

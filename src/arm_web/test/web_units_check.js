@@ -22,7 +22,7 @@ const requests = [];
 let pendingFetch = null;
 const context = vm.createContext({
   console, document: {getElementById: element, createElement: () => element('option'), hasFocus: () => false},
-  window: {addEventListener() {}}, navigator: {}, Date,
+  window: {addEventListener() {}}, navigator: {}, Date, confirm: () => true,
   setInterval: () => 1, clearInterval() {},
   fetch: (url, opts) => {
     if (opts) requests.push({url, body: JSON.parse(opts.body)});
@@ -167,6 +167,20 @@ async function main() {
   ready(); const pollReady = run('poll()'); targets(10, 0);
   responses[2]({ok: true, json: async () => snapshot}); await pollReady;
   assert.equal(run('planReady'), false); assert.equal(run('planId'), null);
+  pendingFetch = null;
+  // Manual homing: every row gets "Home set → 0" on hardware; it posts the joint name.
+  run(`config = {...config, home_joints: ['joint1'], set_zero_available: true}; buildRows(['joint1', 'joint2'])`);
+  const rows = element('joints').innerHTML;
+  assert.match(rows, /setZero\('joint1'\)">Home set → 0/);
+  assert.match(rows, /setZero\('joint2'\)">Home set → 0/);
+  assert.match(rows, /home\('joint1'\)/); assert.doesNotMatch(rows, /home\('joint2'\)/);
+  assert.equal(element('homeHeading').hidden, false);
+  ready(); await run(`setZero('joint2')`);
+  assert.deepEqual(requests.at(-1), {url: '/api/set_zero', body: {joint: 'joint2'}});
+  assert.equal(run('planReady'), false);
+  run(`config = {...config, home_joints: [], set_zero_available: false}; buildRows(['joint1', 'joint2'])`);
+  assert.doesNotMatch(element('joints').innerHTML, /setZero/);
+  assert.equal(element('homeHeading').hidden, true);
   console.log('PASS: actual GUI script unit conversion, payload, readiness, freshness and race checks');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -45,6 +45,7 @@ Source: [nanobee_bridge.py](../src/arm_nanobee_bridge/arm_nanobee_bridge/nanobee
 | `~/unlock` (srv) | `std_srvs/Trigger` | `E 1` (enable the motors) and re-arm trajectory execution after STOP or a fault; fails (stays disarmed) if the board does not answer `ok`. Refused while a trajectory goal is active. Never homes |
 | `~/motors` (srv) | `std_srvs/SetBool` | `E 1` / `E 0`: enable / disable the drivers. Disabled joints can be moved by hand; the board then forgets the home reference |
 | `~/set_zero` (srv) | `std_srvs/Trigger` | `Z`: joints that are not referenced (homed or zeroed) get position 0; referenced joints keep theirs. Board must be `Idle` |
+| `~/set_zero_<joint>` (srv) | `std_srvs/Trigger` | Manual homing (web **Home set → 0**): `Z` with the joint's current position set to 0, from any position and whether homed or not; other joints keep their positions. The joint becomes referenced (soft limits apply from the new zero). Board must be `Idle`, no goal/jog/stream active; result on `~/homing_status` |
 | `~/reload_settings` (srv) | `std_srvs/Trigger` | Read the board settings again (`SETTINGS?`) after changing its config.yaml |
 | `~/push_config` (srv) | `std_srvs/Trigger` | Upload the file at parameter `config_path` (`arm.launch.py`: `NanoBee/NanoBeeDriver/config.yaml`) with `CONFIG`…`END`, then reload the settings. Board must be `Idle`, no goal/jog active; the firmware validates the file and answers `err ...` if it rejects it. Changed homing modes need a bridge restart (home services) |
 
@@ -137,6 +138,7 @@ ros2 topic echo /nanobee_bridge/limit_switches
 ros2 service call /nanobee_bridge/unlock std_srvs/srv/Trigger
 ros2 service call /nanobee_bridge/home std_srvs/srv/Trigger
 ros2 service call /nanobee_bridge/set_zero std_srvs/srv/Trigger
+ros2 service call /nanobee_bridge/set_zero_joint3 std_srvs/srv/Trigger   # joint3 here = 0
 ros2 service call /nanobee_bridge/motors std_srvs/srv/SetBool "{data: false}"
 ros2 service call /nanobee_bridge/reload_settings std_srvs/srv/Trigger
 
@@ -179,7 +181,7 @@ default `['joint1', 'joint2']`).
 `ros2 launch arm_start arm.launch.py use_hardware:=true`, then open
 http://localhost:8080 (from Windows too).
 
-- STOP / Unlock / re-arm, hold − / + to jog a joint, one shared "Target" column for planning or direct movement; **Joint units** selects degrees (default) or radians for joint positions, targets, gauges and jog speed, "Home" for `home_joints`. On hardware the Bridge card also shows the latched trajectory execution status (armed / executing / result / disarmed); **Unlock / re-arm** enables the motors and re-arms plan execution after STOP or a fault. On hardware the Bridge card also shows **Motors: ENABLED / DISABLED** with **Enable motors** / **Disable motors** buttons (disable asks for confirmation: joints go free and the home reference is cleared), and the joint table has a **Motor** column per joint: `ON` (powered), `sleep` (power-save: `joints.jointN.idle_disable` switched the driver off after `motion.idle_timeout_ms` at rest; wakes on the next move), `OFF` (drivers disabled) or `–` (no fresh status).
+- STOP / Unlock / re-arm, hold − / + to jog a joint, one shared "Target" column for planning or direct movement; **Joint units** selects degrees (default) or radians for joint positions, targets, gauges and jog speed, "Home" for `home_joints` and, on hardware, **Home set → 0** in every joint row (manual homing: after confirmation the joint's current position becomes 0°, via bridge `~/set_zero_<joint>`). On hardware the Bridge card also shows the latched trajectory execution status (armed / executing / result / disarmed); **Unlock / re-arm** enables the motors and re-arms plan execution after STOP or a fault. On hardware the Bridge card also shows **Motors: ENABLED / DISABLED** with **Enable motors** / **Disable motors** buttons (disable asks for confirmation: joints go free and the home reference is cleared), and the joint table has a **Motor** column per joint: `ON` (powered), `sleep` (power-save: `joints.jointN.idle_disable` switched the driver off after `motion.idle_timeout_ms` at rest; wakes on the next move), `OFF` (drivers disabled) or `–` (no fresh status).
 - Changing joint units preserves physical targets, jog speed and an unchanged ready plan. TCP angles remain in degrees; the HTTP API still uses degrees and degrees/s.
 - "Position gauge" bar per joint: −180° … 0 … +180° (−π … 0 … +π rad), the dot shows the current position (red and pinned to the end if outside).
 - TCP position: the panel reads the reference frame → selected TCP transform from TF
@@ -216,7 +218,7 @@ HTTP API (JSON body, `Content-Type: application/json` required): `/api/jog` `{"j
 `/api/goto` `{"joint1": deg}`, `/api/plan` `{"joint1": deg, ..., "joint5": deg}`,
 `/api/plan_tcp` `{"tcp_name": "gripper_tip", "x_mm": 100, "y_mm": 0, "z_mm": 200}`,
 `/api/execute` `{"plan_id": "..."}`,
-`/api/home` `{"joint": "joint1"}`, `/api/stop`, `/api/unlock`,
+`/api/home` `{"joint": "joint1"}`, `/api/set_zero` `{"joint": "joint3"}` (bridge `~/set_zero_<joint>`; hardware only), `/api/stop`, `/api/unlock`,
 `/api/motors` `{"enable": true|false}` (bridge `~/motors`; hardware only, refused while a plan executes),
 `/api/board_config` `{"yaml": "..."}` (saves `board_config_path` and calls bridge `~/push_config`;
 the file is restored if the board rejects it; `GET /api/board_config` returns the file),

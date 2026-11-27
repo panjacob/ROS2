@@ -362,7 +362,7 @@ let motorsPending = false;
 function show(text, cls) { const m = $('msg'); m.textContent = text; m.className = cls || ''; }
 
 async function post(path, body, quiet = false) {
-  const manualMotion = ['/api/goto', '/api/home', '/api/unlock', '/api/motors', '/api/board_config'].includes(path)
+  const manualMotion = ['/api/goto', '/api/home', '/api/set_zero', '/api/unlock', '/api/motors', '/api/board_config'].includes(path)
     || (path === '/api/jog' && Object.values(body).some(v => v !== 0))
     || (path === '/api/joy' && (body.axes.some(v => Math.abs(v) > .1) || body.buttons.some(Boolean)));
   if (manualMotion) invalidatePlan('Manual command; preview again before executing.');
@@ -641,6 +641,20 @@ function home(joint) {
   }
 }
 
+function setZero(joint) {
+  if (confirm(`Set ${joint} position to 0° here (manual home)? The current position becomes the new zero; soft limits then apply from it.`)) {
+    stopJog();
+    post('/api/set_zero', {joint});
+  }
+}
+
+function homeCell(n) {
+  const buttons = [];
+  if (config.home_joints.includes(n)) buttons.push(`<button aria-label="Home ${n}" onclick="home('${n}')">Home</button>`);
+  if (config.set_zero_available) buttons.push(`<button aria-label="Set ${n} position to 0" title="Manual home: current position becomes 0°" onclick="setZero('${n}')">Home set → 0</button>`);
+  return `<td>${buttons.join(' ') || '—'}</td>`;
+}
+
 function loadTcpEditor(tcp) {
   $('tcpName').value = tcp.name;
   for (const [index, axis] of ['X', 'Y', 'Z'].entries())
@@ -729,12 +743,13 @@ async function deleteTcp() {
 }
 
 function buildRows(names) {
-  const key = JSON.stringify([names, config.home_joints, config.joint_limits_deg, config.direct_motion_available, config.jog_available, motorsColumn()]);
+  const key = JSON.stringify([names, config.home_joints, config.set_zero_available, config.joint_limits_deg, config.direct_motion_available, config.jog_available, motorsColumn()]);
   if (key === rowsBuilt) return;
   const previous = Object.fromEntries(names.map(n => [n, $('target_' + n)?.value || '']));
   if (rowsBuilt) invalidatePlan('Robot configuration changed; check targets and preview again.');
   rowsBuilt = key;
-  $('homeHeading').hidden = !config.home_joints.length;
+  const homeColumn = config.home_joints.length > 0 || config.set_zero_available === true;
+  $('homeHeading').hidden = !homeColumn;
   $('motorHeading').hidden = !motorsColumn();
   $('joints').innerHTML = names.map(n => `
     <tr><th scope="row">${n}</th>${motorsColumn() ? `<td><span class="lamp" id="motor_${n}">–</span></td>` : ''}<td class="num" id="pos_${n}">–</td>
@@ -743,7 +758,7 @@ function buildRows(names) {
       <td><button id="jogMinus_${n}" ${!jogAvailable() ? 'disabled' : ''} aria-label="Jog ${n} negative" onpointerdown="startJog('${n}',-1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',-1); }">−</button>
           <button id="jogPlus_${n}" ${!jogAvailable() ? 'disabled' : ''} aria-label="Jog ${n} positive" onpointerdown="startJog('${n}',1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',1); }">+</button></td>
       <td><input class="target-input" aria-label="${n} target angle in degrees" type="number" step="any" min="${config.joint_limits_deg[n][0]}" max="${config.joint_limits_deg[n][1]}" id="target_${n}" oninput="planChanged()"></td>
-      ${config.home_joints.length ? `<td>${config.home_joints.includes(n) ? `<button aria-label="Home ${n}" onclick="home('${n}')">Home</button>` : '—'}</td>` : ''}</tr>`).join('');
+      ${homeColumn ? homeCell(n) : ''}</tr>`).join('');
   for (const n of names) $('target_' + n).value = previous[n];
   renderJointUnits();
 }

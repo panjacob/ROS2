@@ -80,7 +80,7 @@ lines starting with `# ` are asynchronous messages (`# homed 0`, `# err home 0: 
 | `T p0..p4 dt_ms` | queued timed segment, constant speed, blends with the next `T`; `err full` = queue full, retry |
 | `J v0..v4 [accel]` | jog (steps/s), repeat within `jog_timeout_ms` |
 | `S` / `!` | smooth stop / instant halt (both drop the queue) |
-| `E 0\|1`, `Z [p0..p4]`, `H [j]`, `V`, `G us` | drivers, set position, home (all or one), defaults, servo |
+| `E 0\|1`, `Z [p0..p4]`, `H [j]`, `V`, `G us` | drivers (enabled at boot), set position, home (all or one), defaults, servo |
 | `?` | `<Idle\|Run\|Jog\|Home P:p0,..,p4 Q:queued F:free E:enabled L:endstops H:referenced O:powered>` |
 | `VER` | `NanoBee 2 joints=5` |
 | `CONFIG` ... `END`, `CONFIG?`, `SETTINGS?`, `REBOOT` | serial only: upload / dump stored / dump effective settings, reboot |

@@ -9,6 +9,8 @@ GET  /camera2.jpg   latest phone camera frame
 POST /api/jog       {"joint1": deg_per_s, ...}   velocity jog (send repeatedly, ~10 Hz)
 POST /api/goto      {"joint1": deg, ...}         absolute move -> joint_command
 POST /api/home      {"joint": "joint1"}          endstop homing of one joint
+POST /api/set_zero  {"joint": "joint1"}          manual homing: current position of the joint
+                                                 becomes 0 (NanoBee bridge only)
 POST /api/stop      {}                           abort everything
 POST /api/unlock    {}                           enable the motors and re-arm execution;
                                                  fails unless the bridge confirms it
@@ -292,11 +294,17 @@ class WebViewer(Node):
         for joint in self.home_joints:
             self._trigger_clients[f'home_{joint}'] = self.create_client(
                 Trigger, f'{bridge_ns}/home_{joint}')
+        self.set_zero_available = not self.simulation
+        if self.set_zero_available:
+            for joint in self.joint_limits:
+                self._trigger_clients[f'set_zero_{joint}'] = self.create_client(
+                    Trigger, f'{bridge_ns}/set_zero_{joint}')
 
     def config(self):
         tcp_config = self.tcps.snapshot()
         return {
             'home_joints': self.home_joints,
+            'set_zero_available': self.set_zero_available,
             'endstops': list(self.home_joints),
             'max_jog_speed': self.max_jog_speed,
             'simulation': self.simulation,
@@ -975,6 +983,9 @@ def make_handler(node, page_path):
             if path == '/api/home':
                 node._invalidate_plan()
                 return node.call(f"home_{body.get('joint', '')}", timeout=5.0)
+            if path == '/api/set_zero':
+                node._invalidate_plan()
+                return node.call(f"set_zero_{body.get('joint', '')}", timeout=5.0)
             if path == '/api/stop':
                 return node.stop()
             if path == '/api/unlock':

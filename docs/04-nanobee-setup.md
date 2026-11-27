@@ -155,9 +155,10 @@ Positions are absolute steps, speeds steps/s.
 using them:
 
 1. Move them to their mechanical zero (marks / alignment pins on the parts), motors enabled.
-2. Zero them: ROS service `~/set_zero` (zeroes only joints that are not referenced, so a homed
-   joint1 keeps its position), or `Z` / *Set all to 0* on the web page **before** homing joint1
-   (it sets every joint to 0).
+2. Zero them: **Home set → 0** in the joint's row on the ROS web page (ROS service
+   `~/set_zero_<joint>`: only that joint becomes 0, from any position), ROS service `~/set_zero`
+   (zeroes only joints that are not referenced, so a homed joint1 keeps its position), or `Z` /
+   *Set all to 0* on the NanoBee web page **before** homing joint1 (it sets every joint to 0).
 
 A board reset, power loss or `E 0` loses the position and the references: home and zero again.
 

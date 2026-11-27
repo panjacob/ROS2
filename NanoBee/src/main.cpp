@@ -8,7 +8,7 @@
 //   J v0 v1 v2 v3 v4 [accel]          jog velocities (steps/s); repeat within jog_timeout_ms
 //   S                                 decelerate to stop, clear queue, cancel homing
 //   !                                 instant halt (real-time on serial, no newline needed)
-//   E 0|1                             disable / enable drivers (disable drops the home reference);
+//   E 0|1                             disable / enable drivers (enabled at boot; disable drops the home reference);
 //                                     joints with joints.jointN.idle_disable also switch off by themselves
 //                                     after motion.idle_timeout_ms at rest and wake on the next move
 //   Z [p0 p1 p2 p3 p4]                set current position (default 0); joints count as referenced
@@ -568,6 +568,7 @@ static void readSerial() {
 
 void setup() {
     Motion::begin();  // first: puts the shift register into a safe state
+    Motion::setEnabled(true);  // hold the arm from boot on: a reset must not drop it
     Serial.setRxBufferSize(2048);  // whole config.yaml can arrive in one burst
     Serial.begin(SERIAL_BAUD);
     SettingsStore::begin();
