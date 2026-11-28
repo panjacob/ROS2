@@ -33,7 +33,7 @@ Source: [nanobee_bridge.py](../src/arm_nanobee_bridge/arm_nanobee_bridge/nanobee
 | `~/limit_switches` (pub) | `std_msgs/String` | Comma-separated joints whose endstop is pressed (e.g. `joint1`); empty when none |
 | `~/motors_enabled` (pub) | `std_msgs/Bool` | Motor drivers enabled (board `E:1`) |
 | `~/motors_powered` (pub) | `std_msgs/String` | Comma-separated joints whose driver is powered (board `O:`); an enabled joint can be idle-disabled by the board |
-| `joint_command` (sub) | `sensor_msgs/JointState` | Absolute target [rad] for named joints, one `M` move at `move_speed` (0 = board `motion.default_speed`); ignored while a trajectory goal is active or homing runs |
+| `joint_command` (sub) | `sensor_msgs/JointState` | Absolute target [rad] for named joints, one `M` move. Optional `velocity` gives a positive per-joint limit [rad/s], capped by `max_jog_speed` and board limits; without it uses `move_speed` (0 = board `motion.default_speed`). Ignored while a trajectory goal is active or homing runs |
 | `joint_trajectory` (sub) | `trajectory_msgs/JointTrajectory` | Unconfirmed legacy path: one `T` segment per point (+ final deceleration ramp), no URDF limit checks or completion (ignored while a trajectory goal is active or a previous one still streams). Prefer the action |
 | `jog` (sub) | `sensor_msgs/JointState` | Velocity jog: `velocity` [rad/s] per named joint (others 0), sent as `J` at `jog_rate`, clamped to `max_jog_speed` and the board's `max_speed`. Must be re-sent within `jog_timeout`; zero/stale → jog stops. Ignored while a trajectory goal is active |
 | `/arm_controller/follow_joint_trajectory` (action) | `control_msgs/FollowJointTrajectory` | MoveIt execution on the real arm, see [Trajectory execution](#trajectory-execution-on-hardware) |
@@ -184,11 +184,11 @@ default `['joint1', 'joint2']`).
 `ros2 launch arm_start arm.launch.py use_hardware:=true`, then open
 http://localhost:8080 (from Windows too).
 
-- Dark, honey-yellow layout: a sticky top bar holds the two main buttons and status pills (link, board state, joint_states age, execution); then **Joint targets** (left) next to **Cameras** (right; stacked on narrow screens), **Board settings**, **TCP position** and **Gamepad**.
+- Dark, honey-yellow layout: a sticky top bar holds the main buttons and status pills (link, board, gamepad, state, execution); **Board** shows the age of the latest joint state, or "not connected" when none is available. In simulation this reflects simulator data, not a physical board. **Gamepad** shows browser device connectivity; motion readiness and its reasons appear in the Gamepad card. **Joint targets** and **TCP position** share a row, followed by full-width **Cameras**, then **Board settings** and **Gamepad**. Paired cards stack on narrow screens.
 - **STOP / START** (one button): STOP halts everything and latches; while stopped, jog, gamepad, Move all to targets, Execute plan and Home are blocked (in the page and in `web_viewer`/bridge) until **START**, which enables the motors and re-arms motion after STOP or a fault (also needed after a board restart). In Gazebo the button is always STOP (no latch). **Disable / Enable motors** (hardware only, no confirmation; disabling frees the joints and clears the home reference).
 - Hold − / + to jog a joint; **Jog speed** is a percentage (1–100 %) of each joint's `max_speed` from the board config.yaml (bridge `~/joint_settings`; in Gazebo of `max_jog_speed`), still capped by the bridge `max_jog_speed`. One shared "Target" column for planning or direct movement; **Joint units** selects degrees (default) or radians for joint positions, targets and gauges. On hardware each row has one Home button: **Home center** / **Home edge** for joints whose board `homing` is not `none` (bridge `~/home_<joint>`), otherwise **Current position is 0** (manual homing: after confirmation the joint's current position becomes 0°, via `~/set_zero_<joint>`). The hardware joint table also has a **Homing** column (`homed`, `homing…`, `failed`, `not homed`), an **Endstop** column (`PRESSED` / `released` for joints with a switch) and a **Motor** column per joint: `ON` (powered), `sleep` (power-save: `joints.jointN.idle_disable` switched the driver off after `motion.idle_timeout_ms` at rest; wakes on the next move), `OFF` (drivers disabled) or `–` (no fresh status).
 - Changing joint units preserves physical targets and an unchanged ready plan. TCP angles remain in degrees; the HTTP API still uses degrees and degrees/s.
-- "Position gauge" bar per joint: −180° … 0 … +180° (−π … 0 … +π rad), the dot shows the current position (red and pinned to the end if outside).
+- "Position gauge" spans each joint's configured limits, with the midpoint marked; the dot shows the current position (red and pinned to the end if outside). Limits come from the URDF generated from `config.yaml` at launch, so edited limits require a relaunch.
 - TCP position: the panel reads the reference frame → selected TCP transform from TF
   and displays that TCP origin (X/Y/Z in millimetres, angles in degrees). It marks the
   position unavailable if joint states or the transform become stale. The web node's
@@ -211,13 +211,20 @@ http://localhost:8080 (from Windows too).
   (`GET /camera2.mjpg`, `GET /camera2.jpg`, `camera2_topic`). See
   [2.4.1](02-dev-environment.md#241-usb-camera-microsoft-lifecam-vx-6000) and
   [2.4.2](02-dev-environment.md#242-phone-camera-telescope) for camera setup in WSL.
+  The phone status reports incoming frames, not phone connectivity: Telescope's virtual camera
+  can provide placeholder frames even when the phone is disconnected.
 - Gamepad: the browser reads it (Gamepad API, so Windows drivers work – WSL has no gamepad driver)
-  and POSTs it to `/api/joy` → `/joy` → `joy_teleop` → `/jog`. Always on when a pad is connected
+  and POSTs mapped axes to `/api/joy` → `/joy_mapped` → `joy_teleop` → `/jog`. Active when a pad is connected
   (a real pad with the standard layout is preferred over virtual ones like vJoy),
   but only while the page has focus. Default mapping: left stick X → joint1, left stick Y → joint2,
   right stick Y → joint3, right stick X → joint4, LB/RB → joint5, B → STOP.
-  Change it with `joy_teleop` parameters (`axis_index`, `axis_scale`, `button_minus`, `button_plus`,
-  `max_speed`, `deadzone`, `expo`).
+  Choose a stick direction or the LB/RB or LT/RT pair for each joint, reverse its direction if
+  desired, and set the dead zone under **Gamepad**. Motion pauses while editing; release
+  the controls before resuming. Button 1 remains STOP. Settings are saved in
+  `~/.config/ros2_arm/gamepad/config.yaml` on the host (override with `gamepad_storage_path`), separate
+  from the board's config file. A standard browser gamepad mapping is required. `joy_teleop` parameters still control maximum speed,
+  response curve and optional enable button; its original `/joy` mapping parameters remain available
+  for other ROS publishers.
 
 HTTP API (JSON body, `Content-Type: application/json` required): `/api/jog` `{"joint1": deg_per_s}`,
 `/api/goto` `{"joint1": deg}`, `/api/plan` `{"joint1": deg, ..., "joint5": deg}`,
@@ -268,8 +275,10 @@ The panel plans at 10 % velocity/acceleration scaling on hardware and 30 % in si
 (`web_viewer` parameters `max_velocity_scaling`/`max_acceleration_scaling`, set by the launch).
 **Move all to targets** (next to Use current angles; Preview / Execute plan are in the separate RViz row; hidden in the Gazebo demo) uses the same
 complete target pose as planning and sends it directly via `/api/goto` → `joint_command`:
-all joints move together at the board's move speed, with no collision checking; a sent
-command does not confirm arrival. It is disabled while the motors are reported disabled.
+all joints move together at the selected Jog speed percentage of their board speed limits,
+also capped by the bridge `max_jog_speed`, with no collision checking; a sent
+command does not confirm arrival. Direct movement waits for board joint speed settings and
+is disabled while the motors are reported disabled.
 Use **Use current angles** before changing individual joints. A blank target field
 defaults to that joint's current angle (filled into the field) only when joint state
 is fresh (connected, at most 2 s old, all joints finite) and within the joint limits;

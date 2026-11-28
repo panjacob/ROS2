@@ -7,7 +7,8 @@ GET  /camera.jpg    latest camera frame
 GET  /camera2.mjpg  live MJPEG stream of camera2/image_raw/compressed (phone)
 GET  /camera2.jpg   latest phone camera frame
 POST /api/jog       {"joint1": deg_per_s, ...}   velocity jog (send repeatedly, ~10 Hz)
-POST /api/goto      {"joint1": deg, ...}         absolute move -> joint_command
+POST /api/goto      {"positions": {"joint1": deg, ...}, "speed_percent": 1..100}
+                                                  absolute move -> joint_command
 POST /api/home      {"joint": "joint1"}          endstop homing of one joint
 POST /api/set_zero  {"joint": "joint1"}          manual homing: current position of the joint
                                                  becomes 0 (NanoBee bridge only)
@@ -18,10 +19,12 @@ POST /api/unlock    {}                           START: enable the motors and re
                                                  fails unless the bridge confirms it
 POST /api/motors    {"enable": true|false}       enable / disable the motor drivers (bridge ~/motors)
 GET  /api/board_config                           {"yaml": "...", "path": "..."} from board_config_path
+POST /api/gamepad_settings                       save host gamepad mapping YAML
 POST /api/board_config {"yaml": "..."}           save board_config_path and upload it to the board
                                                  (bridge ~/push_config); the file is restored if
                                                  the board rejects it
-POST /api/joy       {"axes": [...], "buttons": [...]}  browser gamepad -> /joy
+POST /api/joy       {"axes": [...], "buttons": [...], "mapped": true} -> /joy_mapped
+                    omitted/false mapped flag preserves the original /joy forwarding
 POST /api/tcp/save  {"name": "gripper", "x_mm": 0, ..., "yaw_deg": 0}
 POST /api/tcp/select {"name": "gripper"}
 POST /api/tcp/delete {"name": "gripper"}
@@ -62,6 +65,7 @@ from arm_web.tcp_planning import (PointKinematics, POSITION_TOLERANCE_M,
                                   selected_tcp, transformed_point, validate_tcp_goal)
 from arm_web.joint_planning import (check_plan_start, joint_limits_from_urdf,
                                     validate_joint_goal)
+from arm_web.gamepad_settings import GamepadSettings
 
 STATUS_TOPICS = {
     'machine_state': String,
@@ -240,6 +244,8 @@ class WebViewer(Node):
         tcp_storage_path = self.declare_parameter(
             'tcp_storage_path', '~/.config/ros2_arm/tcps.json').value
         self.tcps = TcpRegistry(tcp_storage_path)
+        self.gamepad_settings = GamepadSettings(self.declare_parameter(
+            'gamepad_storage_path', '~/.config/ros2_arm/gamepad/config.yaml').value)
         self.store = StateStore()
         urdf = self.declare_parameter('robot_description', '').value
         self.robot_name, self.joint_limits = joint_limits_from_urdf(urdf)
@@ -290,6 +296,7 @@ class WebViewer(Node):
         self._jog_pub = self.create_publisher(JointState, 'jog', 10)
         self._cmd_pub = self.create_publisher(JointState, 'joint_command', 10)
         self._joy_pub = self.create_publisher(Joy, 'joy', 10)
+        self._joy_mapped_pub = self.create_publisher(Joy, 'joy_mapped', 10)
         self._trigger_clients = {
             'stop': self.create_client(Trigger, f'{bridge_ns}/stop'),
             'unlock': self.create_client(Trigger, f'{bridge_ns}/unlock'),
@@ -493,12 +500,31 @@ class WebViewer(Node):
     def goto(self, values):
         if not getattr(self, 'direct_motion_available', True):
             return False, 'Gazebo demo uses previewed plans; direct movement is unavailable.'
+        speed_percent = None
+        if isinstance(values, dict) and 'positions' in values:
+            speed_percent = values.get('speed_percent')
+            values = values['positions']
+            if (isinstance(speed_percent, bool) or not isinstance(speed_percent, (int, float))
+                    or not math.isfinite(speed_percent) or not 1 <= speed_percent <= 100):
+                return False, 'Direct move speed must be between 1 and 100 percent.'
         if not values:
             return False, 'no joints given'
+        if not isinstance(values, dict) or any(
+                name not in self.joint_limits or isinstance(value, bool)
+                or not isinstance(value, (int, float)) or not math.isfinite(value)
+                for name, value in values.items()):
+            return False, 'Direct move requires known joints and finite positions.'
         if self.stopped():
             return False, STOPPED_MESSAGE
+        if speed_percent is not None and any(
+                name not in getattr(self, 'joint_settings', {}) for name in values):
+            return False, 'Wait for the board joint speed settings before moving.'
         self._invalidate_plan()
-        self._cmd_pub.publish(self._joint_state(values, 'position'))
+        msg = self._joint_state(values, 'position')
+        if speed_percent is not None:
+            msg.velocity = [math.radians(self.jog_limit(name) * speed_percent / 100)
+                            for name in values]
+        self._cmd_pub.publish(msg)
         return True, 'sent'
 
     def plan(self, values):
@@ -809,10 +835,16 @@ class WebViewer(Node):
             return None
         return future.result()
 
-    def joy(self, axes, buttons):
+    def joy(self, axes, buttons, mapped=False):
         if not getattr(self, 'direct_motion_available', True):
             return False, 'Gazebo demo uses previewed plans; gamepad motion is unavailable.'
-        moving = any(abs(float(a)) > 0.1 for a in axes) or any(int(b) for b in buttons)
+        if (not isinstance(mapped, bool) or not isinstance(axes, list) or
+                not isinstance(buttons, list) or len(axes) > 32 or len(buttons) > 128 or
+                (mapped and len(axes) != len(self.joint_limits)) or
+                any(not isinstance(a, (int, float)) or not math.isfinite(a) or abs(a) > 1 for a in axes) or
+                any(not isinstance(b, int) or b not in (0, 1) for b in buttons)):
+            return False, 'Invalid gamepad input.'
+        moving = any(a != 0 for a in axes) or any(buttons)
         if moving and self.stopped():
             return False, STOPPED_MESSAGE
         msg = Joy()
@@ -821,7 +853,7 @@ class WebViewer(Node):
         msg.buttons = [int(b) for b in buttons]
         if moving:
             self._invalidate_plan()
-        self._joy_pub.publish(msg)
+        (self._joy_mapped_pub if mapped else self._joy_pub).publish(msg)
         return True, 'ok'
 
     def stopped(self):
@@ -963,12 +995,13 @@ def make_handler(node, page_path):
                 snap['plan'] = node.plan_snapshot()
                 snap['camera'] = node.camera.status()
                 snap['camera2'] = node.camera2.status()
+                snap['gamepad_settings'] = node.gamepad_settings.snapshot()
                 self._send(200, json.dumps(snap))
             elif path in ('/camera.jpg', '/camera2.jpg'):
                 frames = node.camera2 if path == '/camera2.jpg' else node.camera
                 _, jpeg = frames.latest()
-                if jpeg is None:
-                    self._send(503, '{"error": "no camera frame yet"}')
+                if jpeg is None or not frames.status()['available']:
+                    self._send(503, '{"error": "no recent camera frame"}')
                 else:
                     self._send(200, jpeg, 'image/jpeg')
             elif path == '/camera.mjpg':
@@ -989,9 +1022,10 @@ def make_handler(node, page_path):
             seq = -1
             try:
                 while True:
-                    seq, jpeg = frames.wait_next(seq, timeout=5.0)
-                    if jpeg is None:
-                        continue
+                    next_seq, jpeg = frames.wait_next(seq, timeout=CAMERA_STALE_S)
+                    if next_seq == seq or jpeg is None or not frames.status()['available']:
+                        break
+                    seq = next_seq
                     self.wfile.write(
                         b'--frame\r\nContent-Type: image/jpeg\r\n'
                         b'Content-Length: ' + str(len(jpeg)).encode() + b'\r\n\r\n'
@@ -1033,7 +1067,10 @@ def make_handler(node, page_path):
             if path == '/api/execute':
                 return node.execute(body)
             if path == '/api/joy':
-                return node.joy(body.get('axes', []), body.get('buttons', []))
+                return node.joy(body.get('axes', []), body.get('buttons', []), body.get('mapped', False))
+            if path == '/api/gamepad_settings':
+                saved = node.gamepad_settings.save(body.get('settings'), body.get('revision'))
+                return True, 'Gamepad settings saved.', saved
             if path == '/api/tcp/save':
                 return node.save_tcp(body)
             if path == '/api/tcp/select':

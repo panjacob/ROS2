@@ -1,4 +1,6 @@
-from arm_teleop.joy_teleop import joy_to_velocities, shape
+from types import SimpleNamespace
+
+from arm_teleop.joy_teleop import JoyTeleop, joy_to_velocities, shape
 
 CFG = {
     'axis_index': [0, 1, -1],
@@ -36,3 +38,25 @@ def test_enable_button_required():
 
 def test_missing_axes_are_zero():
     assert joy_to_velocities([], [], CFG) == [0.0, 0.0, 0.0]
+
+
+def test_web_mapped_axes_preserve_response_curve_and_stop():
+    received = []
+    node = SimpleNamespace(_joints=['joint1', 'joint2', 'joint3'], _cfg=dict(CFG, expo=2.0))
+    node._handle_joy = lambda msg, cfg: received.append(joy_to_velocities(msg.axes, msg.buttons, cfg))
+    JoyTeleop._on_mapped_joy(node, SimpleNamespace(axes=[0.5, -1.0, 0.25], buttons=[0] * 6))
+    assert received == [[7.5, -30.0, 1.875]]
+
+
+def test_stop_button_remains_zero_while_held():
+    warnings = []
+    node = SimpleNamespace(
+        _joints=['joint1', 'joint2', 'joint3'], _stop_button=1, _stop_was_down=False,
+        _stop_client=SimpleNamespace(service_is_ready=lambda: False),
+        get_logger=lambda: SimpleNamespace(warn=warnings.append),
+    )
+    msg = SimpleNamespace(axes=[1.0, 0.0], buttons=[0, 1])
+    JoyTeleop._handle_joy(node, msg, CFG)
+    JoyTeleop._handle_joy(node, msg, CFG)
+    assert node._vel == [0.0, 0.0, 0.0]
+    assert len(warnings) == 1

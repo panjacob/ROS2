@@ -1,5 +1,6 @@
 """Offline tests of the bridge node against a fake NanoBee board (no hardware)."""
 
+import math
 import os
 import sys
 import threading
@@ -117,6 +118,36 @@ def test_connect_reads_board_settings(rig):
     services = dict(rig.node.get_service_names_and_types())
     assert '/nanobee_bridge/home_joint1' in services
     assert '/nanobee_bridge/home_joint2' in services
+
+
+def test_direct_move_respects_per_joint_speed_limits(rig):
+    rig.bridge._on_joint_command(JointState(
+        name=['joint1', 'joint2'], position=[math.radians(10), math.radians(5)],
+        velocity=[math.radians(3.6), math.radians(1.0)]))
+    line = next(line for line in rig.fake.lines if line.startswith('M '))
+    parts = line.split()
+    distance1, distance2 = map(int, parts[1:3])
+    # Joint2 is the bottleneck, despite moving half as far.
+    expected = 17.7778 * distance1 / distance2
+    assert float(parts[-1]) == pytest.approx(expected, abs=1e-5)
+    assert float(parts[-1]) < 64
+
+
+@pytest.mark.parametrize('percent', [1, 50, 100])
+def test_direct_move_speed_percentage(rig, percent):
+    rig.bridge._on_joint_command(JointState(
+        name=['joint1'], position=[math.radians(10)],
+        velocity=[math.radians(6400 / 17.7778 * percent / 100)]))
+    line = next(line for line in rig.fake.lines if line.startswith('M '))
+    assert float(line.split()[-1]) == pytest.approx(6400 * percent / 100)
+
+
+def test_direct_move_rejects_invalid_velocity_limits(rig):
+    count = len(rig.fake.lines)
+    for velocities in ([0.0], [-1.0], [float('nan')], [1.0, 2.0]):
+        rig.bridge._on_joint_command(JointState(
+            name=['joint1'], position=[0.1], velocity=velocities))
+    assert not any(line.startswith('M ') for line in rig.fake.lines[count:])
 
 
 def test_success_streams_segments_and_reports_feedback(rig):

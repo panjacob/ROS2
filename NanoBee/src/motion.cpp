@@ -426,7 +426,8 @@ void jogJoint(int j, float vel, float accel) {
         return;
     }
     J.vgoal = vel < 0 ? -q : q;
-    J.vmin  = toQ(cfg.minSpeed);
+    // A requested jog below the configured start speed must not be accelerated past its goal.
+    J.vmin  = toQ(vel != 0 && fabsf(vel) < cfg.minSpeed ? fabsf(vel) : cfg.minSpeed);
     J.da    = toQaccel(accel);
     J.mode  = VEL;
     portEXIT_CRITICAL(&mux);

@@ -72,6 +72,7 @@ def _launch(context):
     use_rviz = LaunchConfiguration('rviz')
     web_port = LaunchConfiguration('web_port')
     tcp_storage_path = LaunchConfiguration('tcp_storage_path')
+    gamepad_storage_path = LaunchConfiguration('gamepad_storage_path')
     board_config = _board_config_path(LaunchConfiguration('board_config').perform(context))
     model = LaunchConfiguration('model')
     controller_ns = '/arm_gazebo' if gazebo else PythonExpression([
@@ -241,6 +242,7 @@ def _launch(context):
                 'bridge_ns': controller_ns,
                 'simulation': ParameterValue(simulation, value_type=bool),
                 'tcp_storage_path': tcp_storage_path,
+                'gamepad_storage_path': gamepad_storage_path,
                 'board_config_path': board_config,
                 'robot_description': robot_description,
                 'max_velocity_scaling': ParameterValue(plan_scaling, value_type=float),
@@ -287,6 +289,9 @@ def generate_launch_description():
                               description='Xacro model from arm_description/urdf'),
         DeclareLaunchArgument('web_port', default_value='8080'),
         DeclareLaunchArgument('tcp_storage_path', default_value='~/.config/ros2_arm/tcps.json'),
+        DeclareLaunchArgument('gamepad_storage_path',
+                              default_value='~/.config/ros2_arm/gamepad/config.yaml',
+                              description='Host YAML file for the web gamepad mapping'),
         DeclareLaunchArgument('board_config', default_value='',
                               description='NanoBee config.yaml edited on the web page and sent to '
                                           'the board, also the source of the URDF joint limits; '

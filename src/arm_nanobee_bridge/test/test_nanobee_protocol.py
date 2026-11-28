@@ -83,7 +83,9 @@ def test_line_builders():
     assert move_line([1, 2, 3, 4, 5]) == 'M 1 2 3 4 5'
     assert move_line([1, 2, 3, 4, 5], 100) == 'M 1 2 3 4 5 100.0'
     assert segment_line([1, -2, 3, 4, 5], 12.5) == 'T 1 -2 3 4 5 12.500'
-    assert jog_line([0, 1.25, 0, 0, -3]) == 'J 0.0 1.2 0.0 0.0 -3.0'
+    assert jog_line([0, 1.25, 0, 0, -3]) == 'J 0.0 1.25 0.0 0.0 -3.0'
+    assert jog_line([0.01, -0.01, 0, 0, 0]) == 'J 0.01 -0.01 0.0 0.0 0.0'
+    assert move_line([1, 2, 3, 4, 5], 0.01).endswith(' 0.01')
 
 
 def test_config_upload():

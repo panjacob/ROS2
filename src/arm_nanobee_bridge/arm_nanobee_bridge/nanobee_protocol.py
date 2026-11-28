@@ -246,10 +246,15 @@ def format_steps(values):
     return ' '.join(str(int(v)) for v in values)
 
 
+def format_speed(value):
+    text = f'{value:.6f}'.rstrip('0')
+    return text + '0' if text.endswith('.') else text
+
+
 def move_line(steps, speed=None):
     line = 'M ' + format_steps(steps)
     if speed is not None:
-        line += f' {speed:.1f}'
+        line += f' {format_speed(speed)}'
     return line
 
 
@@ -259,4 +264,4 @@ def segment_line(steps, dt_ms):
 
 def jog_line(velocities):
     """velocities in steps/s"""
-    return 'J ' + ' '.join(f'{v:.1f}' for v in velocities)
+    return 'J ' + ' '.join(format_speed(v) for v in velocities)

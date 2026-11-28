@@ -35,7 +35,7 @@ joints:
     max_accel: 106666
     dir_invert: true
     idle_disable: true
-    homing: center
+    homing: none
     homing_dir: -1
     home_offset_deg: 0
     min_deg: -180
@@ -48,22 +48,24 @@ joints:
     idle_disable: false
     homing: edge            # Y endstop on one side: start at the top (0 deg), creep toward +90 deg
     homing_dir: 1
-    home_offset_deg: 90     # angle of the switch; adjust so the reported angle matches the real one
+    home_offset_deg: 85     # angle of the switch; adjust so the reported angle matches the real one
     homing_speed: 400       # 3 deg/s seek, slow touch 0.75 deg/s (min_speed)
     homing_max_travel: 12667 # 95 deg from the top without the switch = error
     min_deg: -90
-    max_deg: 90
+    max_deg: 85
   joint3:                # elbow
-    steps_per_deg: 43
-    max_speed: 3000
+    steps_per_deg: 46
+    max_speed: 1000
     max_accel: 5333
     dir_invert: false
     idle_disable: true
-    homing: none
-    homing_dir: -1
-    home_offset_deg: 0
-    min_deg: -140
-    max_deg: 140
+    homing: edge
+    homing_dir: 1
+    home_offset_deg: 90     # angle of the switch; adjust so the reported angle matches the real one
+    homing_speed: 300       # 3 deg/s seek, slow touch 0.75 deg/s (min_speed)
+    homing_max_travel: 12667 # 95 deg from the top without the switch = error
+    min_deg: -90
+    max_deg: 90
   joint4:                # wrist pitch
     steps_per_deg: 48
     max_speed: 6400

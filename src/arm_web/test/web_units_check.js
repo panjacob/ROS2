@@ -121,7 +121,8 @@ async function main() {
   for (const unit of ['deg', 'rad']) {
     units(unit); run('copyCurrentToPlan()');
     await run('moveDirectly()');
-    assert.deepEqual(requests.at(-1), {url: '/api/goto', body: {joint1: -30, joint2: 0}});
+    assert.deepEqual(requests.at(-1), {url: '/api/goto',
+      body: {positions: {joint1: -30, joint2: 0}, speed_percent: 30}});
     await run('planJoints()');
     assert.deepEqual(requests.at(-1), {url: '/api/plan', body: {joint1: -30, joint2: 0}});
     await run('startJog("joint1", -1)');
@@ -135,6 +136,11 @@ async function main() {
   assert.equal(element('speedLbl').textContent, '50');
   for (let i = 0; i < 10; i++) { units('deg'); units('rad'); }
   await run('startJog("joint2", 1)'); close(requests.at(-1).body.joint2, 180);
+  await run('stopJog()');
+  element('speed').value = '1'; run('speedChanged()');
+  await run('moveDirectly()');
+  assert.equal(requests.at(-1).body.speed_percent, 1);
+  await run('startJog("joint1", 1)'); close(requests.at(-1).body.joint1, 0.45);
   await run('stopJog()');
   element('speed').value = '30';
   // A unit switch during in-flight planning does not discard the response.

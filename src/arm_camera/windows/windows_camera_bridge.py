@@ -56,11 +56,17 @@ class Frames:
         self._cond = threading.Condition()
         self.jpeg = None
         self.seq = 0
+        self.stamp = 0.0
 
     def put(self, jpeg):
         with self._cond:
             self.jpeg, self.seq = jpeg, self.seq + 1
+            self.stamp = time.monotonic()
             self._cond.notify_all()
+
+    def latest(self):
+        with self._cond:
+            return self.jpeg if time.monotonic() - self.stamp < 2.0 else None
 
     def wait_next(self, seq, timeout):
         with self._cond:
@@ -107,7 +113,7 @@ def make_handler(frames):
         def do_GET(self):
             path = self.path.split('?')[0]
             if path == '/frame.jpg':
-                jpeg = frames.jpeg
+                jpeg = frames.latest()
                 if jpeg is None:
                     self.send_error(503, 'no frame yet')
                     return
@@ -121,12 +127,13 @@ def make_handler(frames):
                 self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=frame')
                 self.send_header('Cache-Control', 'no-store')
                 self.end_headers()
-                seq = -1
+                seq = frames.seq
                 try:
                     while True:
-                        seq, jpeg = frames.wait_next(seq, timeout=5.0)
-                        if jpeg is None:
-                            continue
+                        next_seq, jpeg = frames.wait_next(seq, timeout=2.0)
+                        if next_seq == seq:
+                            break
+                        seq = next_seq
                         self.wfile.write(b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: '
                                          + str(len(jpeg)).encode() + b'\r\n\r\n' + jpeg + b'\r\n')
                         self.wfile.flush()

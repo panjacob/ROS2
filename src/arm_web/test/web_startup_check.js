@@ -7,6 +7,15 @@ const vm = require('node:vm');
 const html = fs.readFileSync(path.join(__dirname, '../web/index.html'), 'utf8');
 const markup = html.slice(0, html.indexOf('<script>'));
 const script = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+const headings = [...markup.matchAll(/<h2(?:\s[^>]*)?>([^<]+)<\/h2>/g)].map(match => match[1]);
+assert.deepEqual(headings, ['Joint targets', 'TCP position', 'Cameras', 'Board settings', 'Gamepad']);
+assert.match(markup, /label">Link<\/span>[\s\S]*?label">Board<\/span>[\s\S]*?label">Gamepad<\/span>/);
+assert.doesNotMatch(markup, /class="(?:primary|direct-move)"/);
+assert.doesNotMatch(markup, /<h3>Gamepad mapping<\/h3>|Editing pauses gamepad motion/);
+assert.match(markup, /<section class="card right-card">\s*<h2>TCP position<\/h2>/);
+assert.match(markup, /<section class="card right-card">\s*<h2>Gamepad<\/h2>/);
+assert.match(markup, /<\/div>\s*<section class="card">\s*<h2>Cameras<\/h2>/);
+assert.match(markup, /@media \(max-width: 1150px\)[\s\S]*?\.split > \.right-card \{ grid-column: auto; \}/);
 const elements = new Map();
 
 function makeElement(id = '') {
@@ -24,8 +33,8 @@ function makeElement(id = '') {
         elements.set(match[1], makeElement(match[1]));
       }
     },
-    setAttribute(key, value) { this[key] = value; },
-    replaceChildren() {}, append() {}, focus() {},
+    setAttribute(key, value) { this[key] = value; }, removeAttribute(key) { delete this[key]; },
+    replaceChildren() {}, append() {}, focus() {}, contains(other) { return other === this; },
   };
   return element;
 }
@@ -47,6 +56,11 @@ const state = {
   },
   joints: {}, joints_age: null, tcp: null, tcp_error: 'Waiting for TF', status: {},
   plan: {state: 'none', message: 'No plan yet.'},
+  gamepad_settings: {revision: 'initial', settings: {deadzone: .1, joints: [
+    {control: 'left_x', invert: false}, {control: 'left_y', invert: true},
+    {control: 'right_y', invert: true}, {control: 'right_x', invert: false},
+    {control: 'lb_rb', invert: false},
+  ]}},
 };
 let unavailable = false;
 const requests = [];
@@ -57,6 +71,10 @@ const context = vm.createContext({
   fetch: async (url, options) => {
     if (options) {
       requests.push({url, body: JSON.parse(options.body)});
+      if (url === '/api/gamepad_settings') {
+        state.gamepad_settings = {settings: JSON.parse(options.body).settings, revision: 'saved'};
+        return {ok: true, json: async () => ({ok: true, ...state.gamepad_settings})};
+      }
       return {ok: true, json: async () => ({ok: true})};
     }
     if (unavailable) throw new Error('fixture server unavailable');
@@ -70,6 +88,8 @@ const run = code => vm.runInContext(code, context);
 async function main() {
   await context.startupPoll;
   assert.equal(element('conn').textContent, 'connected');
+  assert.equal(element('age').textContent, 'not connected');
+  assert.equal(element('age').className, 'bad');
   assert.ok(element('target_joint1'));
   assert.equal(element('jogPlus_joint1').disabled, true);
   assert.equal(element('planButton').disabled, true);
@@ -94,6 +114,26 @@ async function main() {
   assert.equal(element('directButton').disabled, true);
   assert.match(markup, /id="speed" type="range" min="1" max="100"/);
   assert.equal(element('age').textContent, '0.00 s');
+  state.config.joint_limits_deg.joint1 = [-30, 90];
+  state.joints.joint1.position_deg = 0;
+  await run('poll()');
+  assert.equal(element('dot_joint1').style.left, '25%');
+  assert.equal(element('scale_joint1').textContent, '-30.00°');
+  assert.equal(element('scaleZero_joint1').textContent, '30.00°');
+  assert.equal(element('scaleMax_joint1').textContent, '90.00°');
+  state.joints.joint1.position_deg = 100;
+  await run('poll()');
+  assert.equal(element('dot_joint1').className, 'dot out');
+  assert.equal(element('dot_joint1').style.left, '100%');
+  state.joints.joint1.position_deg = 0;
+  state.config.joint_limits_deg.joint1 = [-90, 90];
+  state.camera2 = {available: true, age_s: 0};
+  await run('poll()');
+  assert.match(element('cam2Status').textContent, /phone connection unknown/);
+  state.camera2 = {available: false, age_s: 3};
+  await run('poll()');
+  assert.equal(element('cam2').hidden, true);
+  assert.match(element('cam2Status').textContent, /no new frames/);
   await run('startJog("joint1", 1)');
   assert.deepEqual(requests.pop(), {url: '/api/jog', body: {joint1: 36}}); // 30 % of 120 °/s
   await run('stopJog()'); requests.pop();
@@ -109,6 +149,8 @@ async function main() {
   unavailable = true;
   await run('poll()');
   assert.equal(element('conn').textContent, 'disconnected');
+  assert.equal(element('age').textContent, 'not connected');
+  assert.equal(element('age').className, 'bad');
   assert.equal(element('jogPlus_joint1').disabled, true);
   unavailable = false;
   await run('poll()');
@@ -133,8 +175,9 @@ async function main() {
   element('target_joint1').value = '10';
   await run('moveDirectly()');
   assert.equal(requests.at(-1).url, '/api/goto');
-  assert.equal(Object.keys(requests.at(-1).body).length, 6);
-  assert.equal(requests.at(-1).body.joint1, 10);
+  assert.equal(Object.keys(requests.at(-1).body.positions).length, 6);
+  assert.equal(requests.at(-1).body.positions.joint1, 10);
+  assert.equal(requests.at(-1).body.speed_percent, 30);
   await run('toggleMotors()');
   assert.deepEqual(requests.at(-1), {url: '/api/motors', body: {enable: false}});
   state.status.motors_enabled.value = false;
@@ -196,6 +239,62 @@ async function main() {
   await run('poll()');
   assert.equal(element('runToggle').textContent, 'STOP');
   assert.equal(element('jogPlus_joint1').disabled, false);
+  context.document.hasFocus = () => true;
+  const pad = {id: 'test pad', mapping: 'standard', axes: [0, 0, 0, 0],
+               buttons: Array.from({length: 8}, () => ({pressed: false, value: 0}))};
+  context.navigator.getGamepads = () => [pad];
+  run('padLoop()');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(element('padStatus').textContent, 'connected');
+  assert.equal(element('padStatus').className, 'ok');
+  assert.equal(element('padinfo').hidden, true);
+  assert.equal(element('padinfo').textContent, '');
+  pad.axes[0] = .05; pad.axes[1] = .55; pad.buttons[5] = {pressed: true, value: 1};
+  run('padLoop()');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.at(-1).body.mapped, true);
+  assert.equal(requests.at(-1).body.axes[0], 0);
+  assert.ok(Math.abs(requests.at(-1).body.axes[1] + .5) < 1e-10);
+  assert.equal(requests.at(-1).body.axes[4], 1);
+  for (const [i, control] of ['right_x', 'left_y', 'right_y', 'right_x', 'lt_rt'].entries()) {
+    element('padControl' + i).value = control;
+    element('padInvert' + i).checked = i === 0 || i === 1 || i === 2;
+  }
+  element('padDeadzone').value = '.2';
+  run('padSettingsEdited(); padLoop()');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(element('padStatus').textContent, 'connected');
+  assert.match(element('padinfo').textContent, /mapping paused/);
+  assert.deepEqual(requests.at(-1).body.axes, [0, 0, 0, 0, 0]);
+  await run('savePadSettings()');
+  assert.equal(state.gamepad_settings.settings.joints[0].control, 'right_x');
+  assert.equal(state.gamepad_settings.settings.joints[4].control, 'lt_rt');
+  run('padLoop()');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(element('padStatus').textContent, 'connected');
+  assert.match(element('padinfo').textContent, /release controls/);
+  pad.axes = [0, 0, 0, 0]; pad.buttons[5] = {pressed: false, value: 0};
+  run('padLoop()');
+  await new Promise(resolve => setImmediate(resolve));
+  pad.axes[2] = .6;
+  pad.buttons[7] = {pressed: true, value: .6};
+  run('padLoop()');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(Math.abs(requests.at(-1).body.axes[0] + .5) < 1e-10);
+  assert.ok(Math.abs(requests.at(-1).body.axes[4] - .5) < 1e-10);
+  run('padSettingsEdited()');
+  pad.buttons[1] = {pressed: true, value: 1};
+  run('padLoop()');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests.at(-1).body.axes, [0, 0, 0, 0, 0]);
+  assert.equal(requests.at(-1).body.buttons[1], 1);
+  context.navigator.getGamepads = () => [];
+  run('padLoop()');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(element('padStatus').textContent, 'not connected');
+  assert.equal(element('padStatus').className, 'bad');
+  assert.equal(element('padinfo').hidden, true);
+  assert.deepEqual(requests.at(-1).body.axes, [0, 0, 0, 0, 0]);
   console.log('PASS: initial empty DOM, delayed ROS state, new rows and HTTP reconnect');
 }
 

@@ -42,9 +42,14 @@
       var(--bg);
     background-attachment: fixed;
   }
-  main { max-width: 1680px; margin: 0 auto; padding: 1.2em 1.25em 3em; }
-  .split { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(300px, 1fr); gap: 0 1.1em; align-items: start; }
-  @media (max-width: 1150px) { .split { grid-template-columns: minmax(0, 1fr); } }
+  main { width: 100%; margin: 0 auto; padding: 1.2em 1.25em 3em; }
+  .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1.1em; align-items: start; }
+  .split > .right-card { grid-column: 2; }
+  .target-actions { display: flex; justify-content: space-between; gap: 1em; flex-wrap: wrap; }
+  @media (max-width: 1150px) {
+    .split { grid-template-columns: minmax(0, 1fr); }
+    .split > .right-card { grid-column: auto; }
+  }
 
   /* ---------- top bar ---------- */
   .topbar {
@@ -53,7 +58,7 @@
     backdrop-filter: saturate(180%) blur(22px); -webkit-backdrop-filter: saturate(180%) blur(22px);
     border-bottom: 1px solid var(--hairline);
   }
-  .topbar-inner { max-width: 1680px; margin: 0 auto; padding: .75em 1.25em; display: flex; gap: .9em 1.2em; align-items: center; flex-wrap: wrap; }
+  .topbar-inner { width: 100%; margin: 0 auto; padding: .75em 1.25em; display: flex; gap: .9em 1.2em; align-items: center; flex-wrap: wrap; }
   .brand { display: flex; align-items: center; gap: .6em; margin-right: auto; }
   .brand svg { width: 34px; height: 34px; filter: drop-shadow(0 0 10px rgba(255, 196, 23, .35)); }
   .brand h1 { margin: 0; font-size: 1.22em; font-weight: 700; letter-spacing: -.02em; }
@@ -68,6 +73,7 @@
   }
   .pill b { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 34em; }
   .pill b.ok { color: var(--green); } .pill b.bad { color: var(--red); } .pill b.warn { color: var(--honey); }
+  #age { width: 10ch; flex: none; font-variant-numeric: tabular-nums; }
   .pill .label { color: var(--text-3); text-transform: uppercase; font-size: .86em; letter-spacing: .06em; font-weight: 600; }
 
   /* ---------- cards ---------- */
@@ -98,10 +104,6 @@
   button:hover:not(:disabled) { background: var(--raised-hover); }
   button:active:not(:disabled) { transform: scale(.97); }
   button:disabled { cursor: not-allowed; opacity: .38; }
-  button.primary { background: linear-gradient(180deg, #ffd23f, var(--honey) 55%, #f5b400); color: #1a1300; border-color: transparent; font-weight: 600; }
-  button.primary:hover:not(:disabled) { background: linear-gradient(180deg, #ffdc5e, #ffcb2e 55%, #ffbd14); box-shadow: 0 0 18px rgba(255, 196, 23, .35); }
-  button.direct-move { background: var(--honey-soft); border-color: rgba(255, 196, 23, .35); color: var(--honey); }
-  button.direct-move:hover:not(:disabled) { background: rgba(255, 196, 23, .22); }
   button.big { font-size: 1.02em; font-weight: 700; padding: .62em 1.5em; min-width: 8.5em; }
   button.run-stop { background: linear-gradient(180deg, #ff5f55, var(--red) 60%, #e0352b); color: #fff; border-color: transparent; box-shadow: 0 6px 22px -6px rgba(255, 69, 58, .7); letter-spacing: .04em; }
   button.run-stop:hover:not(:disabled) { background: linear-gradient(180deg, #ff7066, #ff5248 60%, #ea3a30); }
@@ -130,7 +132,7 @@
   /* ---------- layout helpers ---------- */
   .row { display: flex; gap: .8em 1.2em; align-items: center; flex-wrap: wrap; }
   .actions { display: flex; gap: .6em; flex-wrap: wrap; padding: .9em 0 .3em; }
-  .actions.rviz { align-items: center; margin-top: .4em; padding: .7em .9em; border: 1px solid var(--hairline); border-radius: 16px; background: rgba(255, 255, 255, .025); }
+  .target-actions .actions { align-items: center; }
   .actions .row-label { color: var(--text-3); font-size: .76em; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; min-width: 3.6em; }
   .muted { color: var(--text-2); }
   .hint { font-size: .86em; color: var(--text-2); }
@@ -170,15 +172,15 @@
   .scale { display: flex; justify-content: space-between; width: 220px; font-size: .7em; color: var(--text-3); font-variant-numeric: tabular-nums; }
 
   /* ---------- cameras ---------- */
-  .cameras { display: flex; flex-direction: column; gap: 1.1em; }
+  .cameras { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 1.1em; }
   .cameras > div { min-width: 0; }
   img.camera { display: block; width: 100%; max-width: 640px; border-radius: 16px; background: #000; border: 1px solid var(--hairline); }
   img.camera[hidden] { display: none; }
 
   /* ---------- TCP / board config ---------- */
-  .tcp-values { display: flex; gap: 1em 2.2em; flex-wrap: wrap; margin: .6em 0; color: var(--text-2); }
-  .tcp-values b { font: 600 1.45em var(--font); font-variant-numeric: tabular-nums; color: var(--text); letter-spacing: -.02em; }
-  .tcp-editor { display: flex; gap: .8em; flex-wrap: wrap; align-items: end; margin-top: 1em; }
+  .tcp-values { display: flex; gap: .4em 1.4em; flex-wrap: wrap; margin: .35em 0; color: var(--text-2); }
+  .tcp-values b { font: 600 1.2em var(--font); font-variant-numeric: tabular-nums; color: var(--text); letter-spacing: -.02em; }
+  .tcp-editor { display: flex; gap: .6em; flex-wrap: wrap; align-items: end; margin-top: .6em; }
   .tcp-editor label { display: flex; flex-direction: column; gap: .3em; font-size: .84em; }
   .tcp-editor input { width: 6.6em; }
   .tcp-editor input#tcpName { width: 10em; }
@@ -221,8 +223,9 @@
     </div>
     <div class="pills" role="status" aria-live="polite">
       <span class="pill"><span class="label">Link</span><b id="conn" class="muted">connecting…</b></span>
+      <span class="pill" title="Time since the latest joint state"><span class="label">Board</span><b id="age">–</b></span>
+      <span class="pill"><span class="label">Gamepad</span><b id="padStatus" class="bad">not connected</b></span>
       <span class="pill"><span class="label">State</span><b id="mstate">–</b></span>
-      <span class="pill"><span class="label">joint_states age</span><b id="age">–</b></span>
       <span class="pill" id="executionStatusRow"><span class="label">Execution</span><b id="trajectoryStatus">–</b></span>
     </div>
   </div>
@@ -234,14 +237,12 @@
 <div class="split">
 <section class="card" aria-labelledby="jointsTitle">
   <h2 id="jointsTitle">Joint targets</h2>
-  <p class="hint">Set one target pose, preview it in RViz, then execute it. Choose joint units below; TCP angles remain in degrees.</p>
   <div class="row" style="margin-bottom:.5em">
     <label>Joint units <select id="jointUnits" onchange="setJointUnits(this.value)">
       <option value="deg">Degrees (°)</option><option value="rad">Radians (rad)</option>
     </select></label>
-    <label title="Percent of each joint's max_speed in the board's config.yaml">Jog speed <input id="speed" type="range" min="1" max="100" step="1" value="30"
+    <label title="Speed for jog and direct moves, as a percentage of each joint's max_speed in the board's config.yaml">Jog speed <input id="speed" type="range" min="1" max="100" step="1" value="30"
       oninput="speedChanged()"> <span id="speedLbl">30</span> %</label>
-    <span class="hint">Hold − / + to jog; release to stop. Jog moves directly, without collision checking.</span>
   </div>
   <div class="table-scroll" role="region" aria-label="Joint targets and manual controls" tabindex="0">
     <table>
@@ -249,57 +250,29 @@
       <tbody id="joints"></tbody>
     </table>
   </div>
-  <div class="actions">
-    <button onclick="copyCurrentToPlan()">Use current angles</button>
-    <button class="direct-move" id="directButton" onclick="moveDirectly()" title="Send all targets directly to the arm, without a plan or collision checking">Move all to targets</button>
-  </div>
-  <div class="actions rviz" role="group" aria-label="RViz plan">
-    <span class="row-label">RViz</span>
-    <button class="primary" id="planButton" onclick="planJoints()">Preview plan</button>
-    <button class="primary" id="executeButton" onclick="executeJoints('joints')" disabled>Execute plan</button>
+  <div class="target-actions">
+    <div class="actions" role="group" aria-label="RViz plan">
+      <span class="row-label">RViz</span>
+      <button id="planButton" onclick="planJoints()">Preview plan</button>
+      <button id="executeButton" onclick="executeJoints('joints')" disabled>Execute plan</button>
+    </div>
+    <div class="actions" role="group" aria-label="Raw targets">
+      <span class="row-label">Raw</span>
+      <button onclick="copyCurrentToPlan()">Use current angles</button>
+      <button id="directButton" onclick="moveDirectly()" title="Send all targets directly to the arm, without a plan or collision checking">Move all to targets</button>
+    </div>
   </div>
   <p id="planStatus" class="muted" role="status" aria-live="polite"></p>
   <p class="hint" id="executionHint">Planning checks joint limits and collisions. Review the RViz animation before executing.</p>
 </section>
 
-<section class="card">
-  <h2>Cameras</h2>
-  <div class="cameras">
-    <div>
-      <h3>USB camera</h3>
-      <p class="hint">Status: <span id="camStatus" class="muted">–</span></p>
-      <img id="cam" class="camera" alt="Live USB camera stream" hidden onerror="cameraStreamFailed('cam')">
-    </div>
-    <div>
-      <h3>Phone camera</h3>
-      <p class="hint">Status: <span id="cam2Status" class="muted">–</span></p>
-      <img id="cam2" class="camera" alt="Live phone camera stream" hidden onerror="cameraStreamFailed('cam2')">
-    </div>
-  </div>
-</section>
-</div>
-
-<section class="card" id="boardConfigCard" hidden>
-  <h2>Board settings</h2>
-  <p class="hint">NanoBee <code>config.yaml</code> — speeds, limits, homing and Wi-Fi of the TinyBee board.</p>
-  <details id="boardConfigDetails" ontoggle="if (this.open && boardConfigText === null) loadBoardConfig()">
-    <summary>Edit and send to the NanoBee board</summary>
-    <p class="hint">File: <code id="boardConfigPath">–</code>. <b>Send to board</b> saves the file and uploads it over USB;
-      the board checks and applies it at once (it must be Idle; Wi-Fi changes after a board reboot). If the board rejects it, the file is left unchanged.</p>
-    <textarea id="boardConfigText" spellcheck="false" rows="24" aria-label="config.yaml contents"
-              oninput="boardConfigEdited()"></textarea>
-    <div class="row" style="margin-top:.8em">
-      <button id="boardConfigSend" class="primary" onclick="sendBoardConfig()">Send to board</button>
-      <button id="boardConfigReload" onclick="loadBoardConfig(true)">Reload from file</button>
-      <span id="boardConfigStatus" class="muted" role="status" aria-live="polite"></span>
-    </div>
-  </details>
-</section>
-
-<section class="card">
+<section class="card right-card">
   <h2>TCP position</h2>
-  <span class="hint" id="tcpFrames">world → tool0, origin (0, 0, 0) of tool0</span>
-  <p class="muted">Position and orientation in the reference frame:</p>
+  <div class="row">
+    <label>Active TCP <select id="tcpSelect" onchange="selectTcp(this.value)"></select></label>
+    <span class="hint" id="tcpFrames">world → tool0</span>
+    <span class="hint" id="tcpStatus">Waiting for TF</span>
+  </div>
   <div class="tcp-values">
     <span>X <b id="tcpX">–</b> mm</span>
     <span>Y <b id="tcpY">–</b> mm</span>
@@ -310,26 +283,21 @@
     <span>Pitch <b id="tcpWorldPitch">–</b>°</span>
     <span>Yaw <b id="tcpWorldYaw">–</b>°</span>
   </div>
-  <span class="muted" id="tcpStatus">Waiting for TF</span>
-  <div class="row" style="margin-top:1em">
-    <label>Active TCP <select id="tcpSelect" onchange="selectTcp(this.value)"></select></label>
-  </div>
   <p class="hint" id="tcpTargetFrame">Target: selected TCP origin in world [mm].</p>
   <div id="demoTarget" hidden>
     <p class="hint" id="demoTargetHint"></p>
     <button onclick="useDemoTarget()">Use target above banana</button>
-    <p class="hint">Gazebo supports plans and joint Jog. Gamepad and direct target moves are unavailable.</p>
   </div>
   <div class="tcp-editor">
     <label>Target X [mm] <input id="tcpTargetX" type="number" step="any" oninput="tcpTargetChanged()"></label>
     <label>Target Y [mm] <input id="tcpTargetY" type="number" step="any" oninput="tcpTargetChanged()"></label>
     <label>Target Z [mm] <input id="tcpTargetZ" type="number" step="any" oninput="tcpTargetChanged()"></label>
   </div>
-  <p class="hint">Orientation is free (5 DOF). Preview checks collisions; the TCP path need not be a straight line. Joint units do not change these millimetres.</p>
+  <p class="hint">Orientation is free; the planned TCP path may not be straight.</p>
   <div class="actions">
     <button id="tcpCopyButton" onclick="copyCurrentTcpToPlan()" disabled>Use current TCP position</button>
-    <button class="primary" id="tcpPlanButton" onclick="planTcp()" disabled>Preview TCP plan</button>
-    <button class="primary" id="tcpExecuteButton" onclick="executeJoints('tcp')" disabled>Execute TCP plan</button>
+    <button id="tcpPlanButton" onclick="planTcp()" disabled>Preview TCP plan</button>
+    <button id="tcpExecuteButton" onclick="executeJoints('tcp')" disabled>Execute TCP plan</button>
   </div>
   <p id="tcpPlanStatus" class="muted" role="status" aria-live="polite">Enter X, Y and Z, preview in RViz, then execute.</p>
   <p id="tcpExecutionHint" class="hint"></p>
@@ -352,15 +320,53 @@
   <p class="hint">Offsets and rotation are relative to tool0. Names: letters, numbers, _ or -.</p>
   </details>
 </section>
+</div>
 
 <section class="card">
-  <h2>Gamepad</h2>
-  <p id="padinfo" class="muted">–</p>
-  <details><summary>Gamepad mapping</summary>
-    <p class="hint">Left stick X → joint1, left stick Y → joint2, right stick Y → joint3,
-    right stick X → joint4, LB/RB → joint5, B → STOP.</p>
-  </details>
+  <h2>Cameras</h2>
+  <div class="cameras">
+    <div>
+      <h3>USB camera</h3>
+      <p class="hint">Status: <span id="camStatus" class="muted">–</span></p>
+      <img id="cam" class="camera" alt="Live USB camera stream" hidden onerror="cameraStreamFailed('cam')">
+    </div>
+    <div>
+      <h3>Phone camera</h3>
+      <p class="hint">Status: <span id="cam2Status" class="muted">–</span></p>
+      <img id="cam2" class="camera" alt="Live phone camera stream" hidden onerror="cameraStreamFailed('cam2')">
+    </div>
+  </div>
 </section>
+
+<div class="split">
+<section class="card" id="boardConfigCard" hidden>
+  <h2>Board settings</h2>
+  <textarea id="boardConfigText" spellcheck="false" rows="24" aria-label="config.yaml contents"
+            oninput="boardConfigEdited()"></textarea>
+  <div class="row" style="margin-top:.8em">
+    <button id="boardConfigSend" onclick="sendBoardConfig()">Send to board</button>
+    <button id="boardConfigReload" onclick="loadBoardConfig(true)">Reload from file</button>
+    <span id="boardConfigStatus" class="muted" role="status" aria-live="polite"></span>
+  </div>
+</section>
+
+<section class="card right-card">
+  <h2>Gamepad</h2>
+  <p id="padinfo" class="hint warn" role="status" hidden></p>
+  <div id="padSettings">
+    <fieldset id="padFields" style="border:0; padding:0; margin:0">
+    <label>Stick dead zone <input id="padDeadzone" type="number" min="0" max="0.95" step="0.01" value="0.1" oninput="padSettingsEdited()"> (0–0.95)</label>
+    <div class="table-scroll"><table>
+      <thead><tr><th>Joint</th><th>Control</th><th>Reverse direction</th></tr></thead>
+      <tbody id="padMappings"></tbody>
+    </table></div>
+    </fieldset>
+    <button id="padSave" onclick="savePadSettings()" disabled>Save mapping</button>
+    <button id="padReload" onclick="reloadPadSettings()" disabled>Discard changes</button>
+    <p id="padSettingsStatus" class="hint" role="status"></p>
+  </div>
+</section>
+</div>
 </main>
 
 <script>
@@ -380,7 +386,7 @@ function cameraStreamFailed(id) {
 function renderCamera(id, camera) {
   const ok = !!camera?.available;
   const status = $(id + 'Status');
-  status.textContent = ok ? 'live'
+  status.textContent = ok ? (id === 'cam2' ? 'receiving frames; phone connection unknown' : 'live')
     : camera?.age_s == null ? CAMERAS[id].missing
     : `no new frames for ${camera.age_s.toFixed(1)} s`;
   status.className = ok ? 'ok' : 'warn';
@@ -388,10 +394,13 @@ function renderCamera(id, camera) {
     cameraStreaming[id] = true;
     $(id).hidden = false;
     $(id).src = CAMERAS[id].stream + '?t=' + Date.now();
+  } else if (!ok && cameraStreaming[id]) {
+    cameraStreaming[id] = false;
+    $(id).hidden = true;
+    $(id).removeAttribute('src');
   }
 }
 let config = {home_joints: [], max_jog_speed: 360};
-const RANGE = 180;  // bar spans -RANGE..+RANGE degrees (360° total)
 let rowsBuilt = '';
 let jointUnits = 'deg';
 // Canonical degrees match the HTTP contract. Cache rendered text so a unit-only
@@ -436,9 +445,9 @@ function renderJointPositions() {
     $('pos_' + n).textContent = Number.isFinite(d) ? displayAngle(d).toFixed(angleDigits()) : '–';
     const dot = $('dot_' + n);
     if (!Number.isFinite(d)) { dot.className = 'dot none'; continue; }
-    const c = Math.max(-RANGE, Math.min(RANGE, d));
-    dot.style.left = (50 + 50 * c / RANGE) + '%';
-    dot.className = Math.abs(d) > RANGE ? 'dot out' : 'dot';
+    const [min, max] = config.joint_limits_deg[n];
+    dot.style.left = (100 * Math.max(0, Math.min(1, (d - min) / (max - min)))) + '%';
+    dot.className = d < min || d > max ? 'dot out' : 'dot';
     dot.title = displayAngle(d).toFixed(angleDigits()) + angleSymbol();
   }
 }
@@ -459,9 +468,10 @@ function renderJointUnits(convertTargets = false) {
     input.max = displayAngle(config.joint_limits_deg[n][1]);
     input.step = 'any'; // Both units accept full precision, including exact limits.
     input.setAttribute('aria-label', `${n} target angle in ${jointUnits === 'rad' ? 'radians' : 'degrees'}`);
-    $('scale_' + n).textContent = `${displayAngle(-RANGE).toFixed(angleDigits())}${symbol}`;
-    $('scaleZero_' + n).textContent = '0' + symbol;
-    $('scaleMax_' + n).textContent = `+${displayAngle(RANGE).toFixed(angleDigits())}${symbol}`;
+    const [min, max] = config.joint_limits_deg[n];
+    $('scale_' + n).textContent = `${displayAngle(min).toFixed(angleDigits())}${symbol}`;
+    $('scaleZero_' + n).textContent = `${displayAngle((min + max) / 2).toFixed(angleDigits())}${symbol}`;
+    $('scaleMax_' + n).textContent = `${displayAngle(max).toFixed(angleDigits())}${symbol}`;
   }
   renderJointPositions();
 }
@@ -513,7 +523,7 @@ function show(text, cls) { const m = $('msg'); m.textContent = text; m.className
 async function post(path, body, quiet = false) {
   const manualMotion = ['/api/goto', '/api/home', '/api/set_zero', '/api/unlock', '/api/motors', '/api/board_config'].includes(path)
     || (path === '/api/jog' && Object.values(body).some(v => v !== 0))
-    || (path === '/api/joy' && (body.axes.some(v => Math.abs(v) > .1) || body.buttons.some(Boolean)));
+    || (path === '/api/joy' && (body.axes.some(v => v !== 0) || body.buttons.some(Boolean)));
   if (manualMotion) invalidatePlan('Manual command; preview again before executing.');
   try {
     const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -765,7 +775,7 @@ async function moveDirectly() {
   const target = readTargets();
   if (!target || !connected || executionPending || motorsEnabled === false || isStopped()) return;
   stopJog();
-  const request = post('/api/goto', target, true);
+  const request = post('/api/goto', {positions: target, speed_percent: jogPercent()}, true);
   const revision = planRevision;
   const result = await request;
   if (revision === planRevision)
@@ -960,7 +970,7 @@ function buildRows(names) {
   $('joints').innerHTML = names.map(n => `
     <tr><th scope="row">${n}</th>${motorsColumn() ? `<td><span class="lamp" id="motor_${n}">–</span></td>` : ''}${endstopCell(n)}${homingCell(n)}<td class="num" id="pos_${n}">–</td>
       <td><div class="bar"><div class="mid"></div><div class="dot none" id="dot_${n}"></div></div>
-          <div class="scale"><span id="scale_${n}">-${RANGE}°</span><span id="scaleZero_${n}">0°</span><span id="scaleMax_${n}">+${RANGE}°</span></div></td>
+          <div class="scale"><span id="scale_${n}"></span><span id="scaleZero_${n}"></span><span id="scaleMax_${n}"></span></div></td>
       <td title="100 % jog = ${jogMaxSpeed(n).toFixed(1)} °/s"><button class="jog" id="jogMinus_${n}" ${!jogAvailable() ? 'disabled' : ''} aria-label="Jog ${n} negative" onpointerdown="startJog('${n}',-1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',-1); }">−</button>
           <button class="jog" id="jogPlus_${n}" ${!jogAvailable() ? 'disabled' : ''} aria-label="Jog ${n} positive" onpointerdown="startJog('${n}',1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',1); }">+</button></td>
       <td><input class="target-input" aria-label="${n} target angle in degrees" type="number" step="any" min="${config.joint_limits_deg[n][0]}" max="${config.joint_limits_deg[n][1]}" id="target_${n}" oninput="planChanged()"></td>
@@ -1070,6 +1080,7 @@ function toggleMotors() {
 // --- Board settings: NanoBeeDriver/config.yaml, sent through the bridge (~/push_config) ---
 let boardConfigText = null;  // last text loaded from / saved to the file; null = not loaded
 let boardConfigPending = false;
+let boardConfigRequested = false;
 
 function boardConfigStatus(text, cls = 'muted') {
   $('boardConfigStatus').textContent = text;
@@ -1097,6 +1108,10 @@ function renderBoardConfig() {
   $('boardConfigCard').hidden = !available;
   $('boardConfigSend').disabled = !available || !connected || boardConfigPending || executionPending || boardConfigText === null;
   $('boardConfigReload').disabled = !available || !connected || boardConfigPending;
+  if (available && connected && !boardConfigRequested) {
+    boardConfigRequested = true;
+    loadBoardConfig();
+  }
 }
 
 async function loadBoardConfig(ask = false) {
@@ -1109,7 +1124,6 @@ async function loadBoardConfig(ask = false) {
     if (!j.ok) { boardConfigStatus(j.message, 'bad'); return; }
     boardConfigText = j.yaml;
     $('boardConfigText').value = j.yaml;
-    $('boardConfigPath').textContent = j.path;
     boardConfigStatus('Loaded from file');
   } catch (e) {
     boardConfigStatus('Request failed: ' + e, 'bad');
@@ -1150,6 +1164,7 @@ async function poll() {
     appliedPoll = sequence;
     connected = true;
     config = s.config;
+    receivePadSettings(s.gamepad_settings, sequence);
     $('demoTarget').hidden = !config.demo_target_mm;
     $('demoTargetHint').textContent = config.scene_ready === false
       ? 'Waiting for Gazebo controllers and the tabletop collision scene…'
@@ -1203,8 +1218,8 @@ async function poll() {
     $('directButton').hidden = config.direct_motion_available === false;
     $('conn').textContent = 'connected'; $('conn').className = 'ok';
     renderJointUnits();
-    $('age').textContent = s.joints_age == null ? 'no data' : `${s.joints_age.toFixed(2)} s`;
-    $('age').className = s.joints_age == null || s.joints_age > 2 ? 'warn' : 'ok';
+    $('age').textContent = s.joints_age == null ? 'not connected' : `${s.joints_age.toFixed(2)} s`;
+    $('age').className = s.joints_age == null ? 'bad' : s.joints_age > 2 ? 'warn' : 'ok';
     $('tcpFrames').textContent = `${config.reference_frame} → ${config.selected_tcp} (${config.tcp_frame})`;
     const tcp = s.tcp;
     const tcpFresh = tcp && tcp.frame === config.tcp_frame && tcp.age < 2
@@ -1232,6 +1247,7 @@ async function poll() {
     appliedPoll = sequence;
     connected = false;
     $('conn').textContent = 'disconnected'; $('conn').className = 'bad';
+    $('age').textContent = 'not connected'; $('age').className = 'bad';
     renderMotors({});
     renderRun();
     renderBoardConfig();
@@ -1242,32 +1258,150 @@ async function poll() {
 setInterval(poll, 200);
 poll();
 
-// --- Gamepad: browser reads it (Windows driver) and forwards to ROS /joy ---
-let padActive = false;
-function padLoop() {
-  if (config.direct_motion_available === false) {
-    $('padinfo').textContent = 'Gamepad motion is unavailable in the Gazebo demo. Use previewed plans.';
+// Browser mappings produce one normalized axis per joint for /joy_mapped.
+const padControls = {none: 'None', left_x: 'Left stick horizontal', left_y: 'Left stick vertical',
+  right_x: 'Right stick horizontal', right_y: 'Right stick vertical',
+  lb_rb: 'LB / RB', lt_rt: 'LT / RT'};
+function validPadSettings(value) {
+  return value && Number.isFinite(value.deadzone) && value.deadzone >= 0 && value.deadzone <= 0.95
+    && Array.isArray(value.joints) && value.joints.length === 5
+    && value.joints.every(j => j && Object.hasOwn(padControls, j.control) && typeof j.invert === 'boolean');
+}
+let padSettings = null;
+let padRevision = null;
+let latestPadSnapshot = null;
+let padDirty = false;
+let padSaving = false;
+let padNeedsNeutral = true;
+let padPollAfter = 0;
+function receivePadSettings(snapshot, sequence) {
+  if (!snapshot || padSaving || sequence <= padPollAfter) return;
+  if (!validPadSettings(snapshot.settings) || typeof snapshot.revision !== 'string') {
+    $('padSettingsStatus').textContent = 'Invalid gamepad settings received; motion paused.';
+    $('padSettingsStatus').className = 'hint bad';
+    padSettings = null;
     return;
   }
-  const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
+  latestPadSnapshot = snapshot;
+  if (snapshot.revision === padRevision) return;
+  if (padDirty) {
+    $('padSettingsStatus').textContent = 'Settings changed elsewhere. Discard changes to reload.';
+    $('padSettingsStatus').className = 'hint warn';
+    return;
+  }
+  reloadPadSettings();
+}
+function reloadPadSettings() {
+  if (!latestPadSnapshot || padSaving) return;
+  padSettings = latestPadSnapshot.settings;
+  padRevision = latestPadSnapshot.revision;
+  padDirty = false;
+  padNeedsNeutral = true;
+  buildPadSettings();
+  $('padSettingsStatus').textContent = 'Mapping loaded.';
+  $('padSettingsStatus').className = 'hint';
+  $('padSave').disabled = true;
+  $('padReload').disabled = true;
+}
+function buildPadSettings() {
+  $('padDeadzone').value = padSettings.deadzone;
+  $('padMappings').innerHTML = padSettings.joints.map((j, i) => `
+    <tr><th>joint${i + 1}</th>
+      <td><select id="padControl${i}" onchange="padSettingsEdited()" aria-label="joint${i + 1} control">${Object.entries(padControls).map(([key, label]) =>
+        `<option value="${key}" ${j.control === key ? 'selected' : ''}>${label}</option>`).join('')}</select></td>
+      <td><input id="padInvert${i}" type="checkbox" ${j.invert ? 'checked' : ''} onchange="padSettingsEdited()" aria-label="Reverse joint${i + 1} direction"></td></tr>`).join('');
+}
+function padSettingsEdited() {
+  padDirty = true;
+  padNeedsNeutral = true;
+  $('padSave').disabled = false;
+  $('padReload').disabled = false;
+  $('padSettingsStatus').textContent = 'Unsaved changes; gamepad motion paused.';
+  $('padSettingsStatus').className = 'hint warn';
+}
+async function savePadSettings() {
+  if (!padSettings || !padDirty || padSaving) return;
+  const value = {deadzone: $('padDeadzone').value.trim() === '' ? NaN : Number($('padDeadzone').value),
+    joints: padSettings.joints.map((_, i) => ({
+    control: $('padControl' + i).value, invert: $('padInvert' + i).checked,
+  }))};
+  if (!validPadSettings(value)) {
+    $('padSettingsStatus').textContent = 'Choose a control for each joint and a dead zone from 0 to 0.95.';
+    $('padSettingsStatus').className = 'hint bad';
+    return;
+  }
+  padSaving = true;
+  $('padFields').disabled = true;
+  $('padSave').disabled = true;
+  $('padReload').disabled = true;
+  try {
+    const result = await post('/api/gamepad_settings', {settings: value, revision: padRevision}, true);
+    if (!result?.ok || !validPadSettings(result.settings) || typeof result.revision !== 'string')
+      throw new Error(result?.message || 'Save failed.');
+    padPollAfter = pollSequence;
+    latestPadSnapshot = {settings: result.settings, revision: result.revision};
+    padDirty = false;
+  } catch (e) {
+    $('padSettingsStatus').textContent = 'Gamepad settings not saved: ' + e.message;
+    $('padSettingsStatus').className = 'hint bad';
+  } finally {
+    padSaving = false;
+    $('padFields').disabled = false;
+    if (!padDirty) {
+      reloadPadSettings();
+      $('padSettingsStatus').textContent = 'Gamepad mapping saved.';
+      $('padSettingsStatus').className = 'hint ok';
+    } else {
+      $('padSave').disabled = false;
+      $('padReload').disabled = false;
+    }
+  }
+}
+function mappedPadAxes(pad) {
+  const dz = padSettings.deadzone;
+  return padSettings.joints.map(j => {
+    const index = {left_x: 0, left_y: 1, right_x: 2, right_y: 3}[j.control];
+    const buttonValue = i => Math.max(0, Math.min(1, pad.buttons[i]?.value ?? (pad.buttons[i]?.pressed ? 1 : 0)));
+    const raw = index !== undefined ? (pad.axes[index] || 0)
+      : j.control === 'lb_rb' ? buttonValue(5) - buttonValue(4)
+      : j.control === 'lt_rt' ? buttonValue(7) - buttonValue(6) : 0;
+    const clamped = Math.max(-1, Math.min(1, raw));
+    const shaped = Math.abs(clamped) <= dz ? 0 : Math.sign(clamped) * (Math.abs(clamped) - dz) / (1 - dz);
+    return shaped * (j.invert ? -1 : 1);
+  });
+}
+let padActive = false;
+let padPending = false;
+function padLoop() {
+  const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(p => p && p.connected !== false) : [];
   // Prefer a real pad with the standard (Xbox-style) layout over virtual devices like vJoy.
   const pad = pads.find(p => p.mapping === 'standard' && !/vjoy/i.test(p.id))
            || pads.find(p => !/vjoy/i.test(p.id)) || pads[0];
-  if (!pad) {
-    $('padinfo').textContent = 'No gamepad detected – press a button on it while this page is focused.';
-  } else if (isStopped()) {
-    $('padinfo').textContent = `${pad.id}: the arm is stopped — press START to use the gamepad.`;
-    if (padActive) {
-      post('/api/joy', {axes: pad.axes.map(() => 0), buttons: pad.buttons.map(() => 0)}, true);
-      padActive = false;
-    }
-  } else {
-    $('padinfo').textContent = `${pad.id} → /joy (mapping: ${pad.mapping || 'non-standard!'})`;
-    const axes = pad.axes.map(a => Math.round(a * 1000) / 1000);
-    const buttons = pad.buttons.map(b => b.pressed ? 1 : 0);
-    if (document.hasFocus()) { post('/api/joy', {axes, buttons}); padActive = true; }
-    else if (padActive) { post('/api/joy', {axes: axes.map(() => 0), buttons: buttons.map(() => 0)}); padActive = false; }
-  }
+  const reason = !pad ? 'not detected' : !connected ? 'web disconnected'
+    : config.direct_motion_available === false ? 'motion unavailable'
+    : pad.mapping !== 'standard' ? 'standard gamepad required'
+    : isStopped() ? 'arm stopped' : !padSettings ? 'mapping unavailable'
+    : padDirty || padSaving || $('padFields').contains(document.activeElement) ? 'mapping paused'
+    : !document.hasFocus() ? 'page not focused' : 'active';
+  if (reason !== 'active') padNeedsNeutral = true;
+  if (reason === 'active' && padNeedsNeutral && mappedPadAxes(pad).every(v => v === 0)
+      && pad.buttons.every(b => !b.pressed && !(b.value > padSettings.deadzone))) padNeedsNeutral = false;
+  const ready = reason === 'active' && !padNeedsNeutral;
+  const status = reason === 'active' && !ready ? 'release controls' : reason;
+  $('padStatus').textContent = pad ? 'connected' : 'not connected';
+  $('padStatus').className = pad ? 'ok' : 'bad';
+  $('padinfo').hidden = !pad || status === 'active';
+  $('padinfo').textContent = !pad || status === 'active' ? '' : `Gamepad: ${status}`;
+  if (padPending) return;
+  const stopPressed = !!pad?.buttons[1]?.pressed && connected && document.hasFocus()
+    && config.direct_motion_available !== false && pad.mapping === 'standard' && !isStopped();
+  const active = ready || stopPressed;
+  if (!active && !padActive) return;
+  const axes = ready && !stopPressed ? mappedPadAxes(pad) : [0, 0, 0, 0, 0];
+  const buttons = ready ? pad.buttons.map(b => b.pressed ? 1 : 0) : stopPressed ? [0, 1] : [];
+  padActive = active;
+  padPending = true;
+  post('/api/joy', {axes, buttons, mapped: true}, true).finally(() => { padPending = false; });
 }
 setInterval(padLoop, 50);
 </script>

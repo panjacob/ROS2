@@ -23,7 +23,8 @@ Topics:
   pub  ~/trajectory_status std_msgs/String         (latched) armed/executing/result/disarmed
   pub  ~/armed             std_msgs/Bool           (latched) false after STOP or a fault: all
                                                    motion is refused until ~/unlock
-  sub  joint_command       sensor_msgs/JointState  move to absolute positions (firmware M)
+  sub  joint_command       sensor_msgs/JointState  absolute positions (firmware M); optional
+                                                   velocity is a positive per-joint limit [rad/s]
   sub  joint_trajectory    trajectory_msgs/JointTrajectory  timed points (firmware T segments)
   sub  jog                 sensor_msgs/JointState  velocity [rad/s] per joint; keep publishing,
                                                    motion stops after jog_timeout without messages
@@ -513,9 +514,25 @@ class NanoBeeBridge(Node):
             if target is None:
                 self.get_logger().warn('No position from the board yet, command dropped')
                 return
+            start = list(target)
             self._apply(target, msg.name, msg.position)
             speed = None
-            if self._move_speed > 0.0:
+            if msg.velocity:
+                if (len(msg.velocity) != len(msg.name) or len(msg.position) != len(msg.name)
+                        or len(set(msg.name)) != len(msg.name)
+                        or any(name not in self._index for name in msg.name)
+                        or any(not math.isfinite(v) or v <= 0 for v in msg.velocity)):
+                    self.get_logger().warn('joint_command requires one positive finite velocity per known joint')
+                    return
+                distances = [abs(end - begin) for begin, end in zip(start, target)]
+                dmax = max(distances)
+                if dmax:
+                    speed = min(
+                        min(math.degrees(v), self._max_jog_speed) * self._settings.steps_per_deg[j]
+                        * dmax / distances[j]
+                        for name, v in zip(msg.name, msg.velocity)
+                        for j in [self._index[name]] if distances[j])
+            elif self._move_speed > 0.0:
                 speed = self._move_speed * max(self._settings.steps_per_deg)
             ok, reply = self._send(move_line(target, speed))
             if ok:

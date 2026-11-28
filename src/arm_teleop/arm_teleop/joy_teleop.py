@@ -1,6 +1,7 @@
 """Gamepad -> joint velocity jog.
 
-  sub  joy  sensor_msgs/Joy        (from the web page, browser "standard" gamepad layout)
+  sub  joy  sensor_msgs/Joy        (standard gamepad layout)
+  sub  joy_mapped sensor_msgs/Joy  (one pre-mapped, deadzoned axis per joint from the web page)
   pub  jog  sensor_msgs/JointState (velocity [rad/s] per joint, consumed by nanobee_bridge)
 
 Default layout (Xbox naming): left stick X -> joint1, left stick Y -> joint2,
@@ -81,6 +82,7 @@ class JoyTeleop(Node):
         self._jog_pub = self.create_publisher(JointState, 'jog', 10)
         self._stop_client = self.create_client(Trigger, stop_service)
         self.create_subscription(Joy, 'joy', self._on_joy, 10)
+        self.create_subscription(Joy, 'joy_mapped', self._on_mapped_joy, 10)
         self.create_timer(1.0 / rate, self._tick)
         self._vel = [0.0] * n
         self._stamp = 0.0
@@ -89,14 +91,24 @@ class JoyTeleop(Node):
         self.get_logger().info('Gamepad teleop ready (waiting for /joy)')
 
     def _on_joy(self, msg):
-        self._vel = joy_to_velocities(list(msg.axes), list(msg.buttons), self._cfg)
+        self._handle_joy(msg, self._cfg)
+
+    def _on_mapped_joy(self, msg):
+        n = len(self._joints)
+        cfg = dict(self._cfg, axis_index=list(range(n)), axis_scale=[1.0] * n,
+                   button_minus=[-1] * n, button_plus=[-1] * n, deadzone=0.0)
+        self._handle_joy(msg, cfg)
+
+    def _handle_joy(self, msg, cfg):
+        self._vel = joy_to_velocities(list(msg.axes), list(msg.buttons), cfg)
         self._stamp = time.monotonic()
         stop_down = 0 <= self._stop_button < len(msg.buttons) and msg.buttons[self._stop_button] > 0
-        if stop_down and not self._stop_was_down:
-            self.get_logger().warn('Stop button pressed')
+        if stop_down:
             self._vel = [0.0] * len(self._joints)
-            if self._stop_client.service_is_ready():
-                self._stop_client.call_async(Trigger.Request())
+            if not self._stop_was_down:
+                self.get_logger().warn('Stop button pressed')
+                if self._stop_client.service_is_ready():
+                    self._stop_client.call_async(Trigger.Request())
         self._stop_was_down = stop_down
 
     def _tick(self):

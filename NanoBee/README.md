@@ -54,6 +54,10 @@ While attached to WSL the port is not available on Windows (and vice versa: `usb
 
 > Flashing replaces whatever firmware is on the board. Keep the motor power off or the arm clear for the first start.
 
+For a host-side stepping regression check, from `NanoBee/test` run
+`g++ -std=c++17 -I stubs test_motion.cpp -o /tmp/nanobee-motion-test && /tmp/nanobee-motion-test`.
+This exercises the motion logic without board hardware.
+
 ## 4. First start
 
 - Serial monitor (115200) should print `# NanoBee ready` and the Wi-Fi address.
@@ -74,6 +78,7 @@ one-list-per-key form is still accepted):
 | Key | Meaning |
 |-----|---------|
 | `motion.blend` | `true`: consecutive `T` segments run back to back without stopping (smooth ROS trajectories) |
+| `motion.min_speed` | start/stop speed in steps/s; a lower commanded jog or move speed is honored instead of being raised to this value |
 | `joints.jointN.idle_disable`, `motion.idle_timeout_ms` | switch the driver off after this long at rest (cooler, less power); wakes on the next move, keeps the home reference (status `O:`) |
 | `joints.jointN.homing` | `none`, `edge` (switch = `home_offset_deg`) or `center` (switch hit from both sides, middle = `home_offset_deg`) |
 | `joints.jointN.homing_dir` | direction of the first approach to the switch |

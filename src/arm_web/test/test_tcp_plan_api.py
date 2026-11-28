@@ -17,7 +17,8 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 from arm_web.joint_planning import joint_limits_from_urdf
 from arm_web.tcp_planning import PointKinematics
 from arm_web.tcp_registry import TcpRegistry
-from arm_web.web_viewer import StateStore, WebViewer
+from arm_web.web_viewer import StateStore, WebViewer, make_handler
+from arm_web.gamepad_settings import GamepadSettings
 
 
 def future(value):
@@ -191,6 +192,28 @@ def test_jog_rejects_unknown_joints_and_nonfinite_speed(viewer, values):
     assert not viewer.jog(values)[0]
 
 
+def test_direct_move_publishes_scaled_joint_velocity_limits(viewer):
+    from builtin_interfaces.msg import Time
+    viewer.max_jog_speed = 120.
+    viewer.joint_settings = {'joint1': {'max_speed_deg_s': 45.},
+                             'joint2': {'max_speed_deg_s': 25.}}
+    viewer.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(to_msg=Time))
+    published = []
+    viewer._cmd_pub = SimpleNamespace(publish=published.append)
+    assert viewer.goto({'positions': {'joint1': 10, 'joint2': -20}, 'speed_percent': 1})[0]
+    msg = published[-1]
+    assert list(msg.name) == ['joint1', 'joint2']
+    assert list(msg.position) == pytest.approx([math.radians(10), math.radians(-20)])
+    assert list(msg.velocity) == pytest.approx([math.radians(.45), math.radians(.25)])
+    for speed in (0, 101, float('nan'), True, '1', None):
+        assert not viewer.goto({'positions': {'joint1': 10}, 'speed_percent': speed})[0]
+    assert not viewer.goto({'positions': {'unknown': 1}, 'speed_percent': 1})[0]
+    assert not viewer.goto({'positions': {'joint3': 1}, 'speed_percent': 1})[0]
+    assert len(published) == 1
+    assert viewer.goto({'joint1': 10})[0]
+    assert not published[-1].velocity
+
+
 class MotorsClient:
     srv_name = '/nanobee_bridge/motors'
 
@@ -240,6 +263,9 @@ def test_stopped_bridge_refuses_motion_until_start(viewer):
     viewer._joint_state = lambda values, field: (values, field)
     published = []
     viewer._jog_pub = viewer._cmd_pub = viewer._joy_pub = SimpleNamespace(publish=published.append)
+    viewer._joy_mapped_pub = SimpleNamespace(publish=published.append)
+    from builtin_interfaces.msg import Time
+    viewer.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(to_msg=Time))
     calls = []
     viewer.call = lambda name, timeout=5.0: (calls.append(name), (True, 'ok'))[1]
     viewer.store.update_status('armed', False)
@@ -248,8 +274,12 @@ def test_stopped_bridge_refuses_motion_until_start(viewer):
                    viewer.execute({'plan_id': 'x'})):
         assert result == (False, 'The arm is stopped; press START first.')
     assert published == [] and calls == []
+    assert not viewer.joy([1.0] * 5, [], True)[0]
     assert viewer.jog({'joint1': 0})[0]  # releasing a jog is always allowed
     viewer.store.update_status('armed', True)
+    assert viewer.joy([0.05, 0, 0, 0, 0], [], True)[0]
+    assert not viewer.joy([float('nan')] * 5, [], True)[0]
+    assert not viewer.joy([1.0], [], True)[0]
     assert viewer.goto({'joint1': 5})[0]
     assert viewer.home('joint1')[0] and calls == ['home_joint1']
     viewer.simulation = True
@@ -269,6 +299,19 @@ class PushConfigClient:
     def call_async(self, _request):
         self.uploaded.append(Path(self.path).read_text())
         return future(SimpleNamespace(success=self.success, message='board says ' + str(self.success)))
+
+
+def test_gamepad_settings_dispatch(viewer, tmp_path):
+    viewer.gamepad_settings = GamepadSettings(tmp_path / 'gamepad.yaml')
+    handler = object.__new__(make_handler(viewer, 'unused'))
+    handler.path = '/api/gamepad_settings'
+    snapshot = viewer.gamepad_settings.snapshot()
+    snapshot['settings']['joints'][4]['control'] = 'lt_rt'
+    ok, _, saved = handler._dispatch(snapshot)
+    assert ok
+    assert saved == GamepadSettings(tmp_path / 'gamepad.yaml').snapshot()
+    with pytest.raises(ValueError, match='changed elsewhere'):
+        handler._dispatch(snapshot)
 
 
 def test_board_config_load_save_and_push(viewer, tmp_path):
