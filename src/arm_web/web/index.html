@@ -2,168 +2,313 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Arm control</title>
+<title>NanoBee Arm</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0b0c">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 1.5 28.6 8.75v14.5L16 30.5 3.4 23.25V8.75z' fill='%23ffc417'/%3E%3Cellipse cx='16' cy='17' rx='6' ry='8' fill='%23111'/%3E%3Cpath d='M10.4 14h11.2M10 18h12M10.8 22h10.4' stroke='%23ffc417' stroke-width='2'/%3E%3C/svg%3E">
 <style>
-  body { font-family: system-ui, sans-serif; margin: 1.5em auto; padding: 0 1em; max-width: 1200px; background: #f4f5f7; color: #222; }
-  h1 { margin: 0 0 .3em; font-size: 1.4em; }
-  h2 { font-size: 1.05em; margin: 0 0 .5em; }
-  .card { background: #fff; border-radius: 8px; padding: 1em; margin-bottom: 1em; box-shadow: 0 1px 3px #0002; }
+  :root {
+    color-scheme: dark;
+    --bg: #0b0b0c;
+    --card: rgba(28, 28, 30, .78);
+    --card-solid: #1c1c1e;
+    --raised: rgba(255, 255, 255, .06);
+    --raised-hover: rgba(255, 255, 255, .11);
+    --hairline: rgba(255, 255, 255, .09);
+    --text: #f5f5f7;
+    --text-2: #a1a1a6;
+    --text-3: #6e6e73;
+    --honey: #ffc417;
+    --honey-2: #ff9f0a;
+    --honey-soft: rgba(255, 196, 23, .14);
+    --red: #ff453a;
+    --red-soft: rgba(255, 69, 58, .16);
+    --green: #30d158;
+    --green-soft: rgba(48, 209, 88, .15);
+    --radius: 22px;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", "Segoe UI", Inter, system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0; min-height: 100vh; color: var(--text); font: 15px/1.45 var(--font);
+    -webkit-font-smoothing: antialiased; letter-spacing: -.01em;
+    background:
+      radial-gradient(1100px 520px at 12% -8%, rgba(255, 196, 23, .13), transparent 62%),
+      radial-gradient(900px 480px at 100% 0%, rgba(255, 159, 10, .07), transparent 60%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='97' viewBox='0 0 56 97'%3E%3Cpath d='M28 0 56 16.2v32.4L28 64.8 0 48.6V16.2zM28 64.8V97M0 48.6v48.6M56 48.6v48.6' fill='none' stroke='%23ffc417' stroke-opacity='.045' stroke-width='1'/%3E%3C/svg%3E"),
+      var(--bg);
+    background-attachment: fixed;
+  }
+  main { max-width: 1680px; margin: 0 auto; padding: 1.2em 1.25em 3em; }
+  .split { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(300px, 1fr); gap: 0 1.1em; align-items: start; }
+  @media (max-width: 1150px) { .split { grid-template-columns: minmax(0, 1fr); } }
+
+  /* ---------- top bar ---------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(11, 11, 12, .72);
+    backdrop-filter: saturate(180%) blur(22px); -webkit-backdrop-filter: saturate(180%) blur(22px);
+    border-bottom: 1px solid var(--hairline);
+  }
+  .topbar-inner { max-width: 1680px; margin: 0 auto; padding: .75em 1.25em; display: flex; gap: .9em 1.2em; align-items: center; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: .6em; margin-right: auto; }
+  .brand svg { width: 34px; height: 34px; filter: drop-shadow(0 0 10px rgba(255, 196, 23, .35)); }
+  .brand h1 { margin: 0; font-size: 1.22em; font-weight: 700; letter-spacing: -.02em; }
+  .brand h1 span { background: linear-gradient(135deg, var(--honey), var(--honey-2)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .brand small { display: block; color: var(--text-3); font-size: .72em; font-weight: 500; letter-spacing: .02em; }
+  .controls { display: flex; gap: .6em; align-items: center; flex-wrap: wrap; }
+  .pills { display: flex; gap: .45em; flex-wrap: wrap; width: 100%; }
+  .pill {
+    display: inline-flex; align-items: center; gap: .45em; max-width: 100%;
+    padding: .28em .8em; border-radius: 999px; font-size: .8em;
+    background: var(--raised); border: 1px solid var(--hairline); color: var(--text-2);
+  }
+  .pill b { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 34em; }
+  .pill b.ok { color: var(--green); } .pill b.bad { color: var(--red); } .pill b.warn { color: var(--honey); }
+  .pill .label { color: var(--text-3); text-transform: uppercase; font-size: .86em; letter-spacing: .06em; font-weight: 600; }
+
+  /* ---------- cards ---------- */
+  .card {
+    background: var(--card); border: 1px solid var(--hairline); border-radius: var(--radius);
+    padding: 1.35em 1.5em; margin-bottom: 1.1em;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, .04) inset, 0 18px 40px -24px rgba(0, 0, 0, .9);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  }
+  h2 { display: flex; align-items: center; gap: .5em; margin: 0 0 .7em; font-size: 1.22em; font-weight: 700; letter-spacing: -.02em; }
+  h2::before {
+    content: ""; width: .82em; height: .94em; flex: none;
+    background: linear-gradient(160deg, var(--honey), var(--honey-2));
+    clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
+  }
+  h3 { margin: 0 0 .35em; font-size: 1em; font-weight: 600; }
+  p { margin: .5em 0; }
+  code { font-family: var(--mono); font-size: .9em; color: var(--honey); }
+  a { color: var(--honey); }
+
+  /* ---------- buttons & inputs ---------- */
+  button {
+    font: 500 .95em var(--font); color: var(--text); letter-spacing: -.01em;
+    padding: .5em 1.05em; border-radius: 999px; border: 1px solid var(--hairline);
+    background: var(--raised); cursor: pointer; user-select: none; touch-action: none;
+    transition: background .15s, transform .08s, box-shadow .15s, opacity .15s;
+  }
+  button:hover:not(:disabled) { background: var(--raised-hover); }
+  button:active:not(:disabled) { transform: scale(.97); }
+  button:disabled { cursor: not-allowed; opacity: .38; }
+  button.primary { background: linear-gradient(180deg, #ffd23f, var(--honey) 55%, #f5b400); color: #1a1300; border-color: transparent; font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: linear-gradient(180deg, #ffdc5e, #ffcb2e 55%, #ffbd14); box-shadow: 0 0 18px rgba(255, 196, 23, .35); }
+  button.direct-move { background: var(--honey-soft); border-color: rgba(255, 196, 23, .35); color: var(--honey); }
+  button.direct-move:hover:not(:disabled) { background: rgba(255, 196, 23, .22); }
+  button.big { font-size: 1.02em; font-weight: 700; padding: .62em 1.5em; min-width: 8.5em; }
+  button.run-stop { background: linear-gradient(180deg, #ff5f55, var(--red) 60%, #e0352b); color: #fff; border-color: transparent; box-shadow: 0 6px 22px -6px rgba(255, 69, 58, .7); letter-spacing: .04em; }
+  button.run-stop:hover:not(:disabled) { background: linear-gradient(180deg, #ff7066, #ff5248 60%, #ea3a30); }
+  button.run-start { background: linear-gradient(180deg, #ffd23f, var(--honey) 55%, #f5b400); color: #1a1300; border-color: transparent; letter-spacing: .04em; animation: glow 1.8s ease-in-out infinite; }
+  @keyframes glow { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 196, 23, .55); } 50% { box-shadow: 0 0 0 9px rgba(255, 196, 23, 0); } }
+  button.motors-on { color: var(--green); border-color: rgba(48, 209, 88, .35); background: var(--green-soft); }
+  button.motors-off { color: var(--red); border-color: rgba(255, 69, 58, .35); background: var(--red-soft); }
+  button .led { display: inline-block; width: .55em; height: .55em; margin-right: .5em; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; vertical-align: .08em; }
+  button.jog { width: 2.3em; height: 2.3em; padding: 0; font-size: 1.05em; font-weight: 600; }
+  button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible, textarea:focus-visible, .table-scroll:focus-visible {
+    outline: 3px solid rgba(255, 196, 23, .7); outline-offset: 2px;
+  }
+  input, select, textarea {
+    font: inherit; color: var(--text); padding: .42em .65em; border-radius: 10px;
+    background: rgba(255, 255, 255, .06); border: 1px solid var(--hairline);
+  }
+  input:hover, select:hover, textarea:hover { border-color: rgba(255, 255, 255, .18); }
+  input:disabled { opacity: .45; }
+  select { padding-right: 1.6em; }
+  select option { background: var(--card-solid); }
+  input[type=number] { width: 6.4em; font-variant-numeric: tabular-nums; }
+  input[type=range] { accent-color: var(--honey); padding: 0; background: none; border: 0; vertical-align: middle; width: 11em; }
+  .target-input { background: var(--honey-soft); border-color: rgba(255, 196, 23, .3); }
+  label { color: var(--text-2); }
+
+  /* ---------- layout helpers ---------- */
+  .row { display: flex; gap: .8em 1.2em; align-items: center; flex-wrap: wrap; }
+  .actions { display: flex; gap: .6em; flex-wrap: wrap; padding: .9em 0 .3em; }
+  .actions.rviz { align-items: center; margin-top: .4em; padding: .7em .9em; border: 1px solid var(--hairline); border-radius: 16px; background: rgba(255, 255, 255, .025); }
+  .actions .row-label { color: var(--text-3); font-size: .76em; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; min-width: 3.6em; }
+  .muted { color: var(--text-2); }
+  .hint { font-size: .86em; color: var(--text-2); }
+  .ok { color: var(--green); } .bad { color: var(--red); } .warn { color: var(--honey); }
+  #msg { min-height: 1.4em; margin: 0 0 .7em; font-size: .9em; padding-left: .2em; }
+  details { margin-top: 1.1em; border-top: 1px solid var(--hairline); padding-top: .9em; }
+  summary { cursor: pointer; font-weight: 600; width: fit-content; color: var(--text); }
+  summary::marker { color: var(--honey); }
+
+  /* ---------- joint table ---------- */
+  .table-scroll { overflow-x: auto; margin: .8em -.4em; border-radius: 14px; }
+  .table-scroll table { min-width: 820px; }
   table { border-collapse: collapse; width: 100%; }
-  th, td { text-align: left; padding: .35em .6em; border-bottom: 1px solid #eee; }
-  td.num { font-variant-numeric: tabular-nums; text-align: right; }
-  button { font-size: 1em; padding: .35em .8em; border-radius: 5px; border: 1px solid #888; background: #fafafa; cursor: pointer; user-select: none; touch-action: none; }
-  button:active { background: #dde; }
-  button:disabled { cursor: not-allowed; opacity: .55; }
-  button.primary { background: #175b9d; color: white; border-color: #124778; }
-  button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid #175b9d; outline-offset: 3px; }
-  input, select { font: inherit; padding: .35em; }
-  .table-scroll { overflow-x: auto; margin: .6em 0; }
-  .table-scroll table { min-width: 730px; }
-  .target-input { background: #f0f6ff; border: 1px solid #879db9; border-radius: 4px; }
-  .actions { padding: 1em 0 .4em; }
-  details { margin-top: 1em; border-top: 1px solid #dde2e8; padding-top: .8em; }
-  summary { cursor: pointer; font-weight: 600; width: fit-content; }
-  button.direct-move { background: #fff3d6; border-color: #c9a24a; }
-  .hint { font-size: .9em; }
-  @media (max-width: 600px) { body { margin: .8em auto; padding: 0 .6em; } .card { padding: .8em; } .row { gap: .7em; } .actions button { flex: 1 1 auto; } }
-  button.stop { background: #d32; color: #fff; border-color: #a10; font-weight: bold; font-size: 1.2em; padding: .5em 1.6em; }
-  input[type=number] { width: 6em; }
-  .row { display: flex; gap: 1em; align-items: center; flex-wrap: wrap; }
-  .muted { color: #596574; }
-  .ok { color: #080; } .bad { color: #c00; } .warn { color: #b60; }
-  #msg { min-height: 1.3em; }
-  .lamp { display: inline-block; padding: .15em .7em; border-radius: 1em; font-weight: bold;
-          background: #ddd; color: #666; min-width: 5.5em; text-align: center; }
-  .lamp.on { background: #e22; color: #fff; box-shadow: 0 0 8px #e22; }
-  .lamp.off { background: #cfc; color: #060; }
-  .lamp.powered { background: #cfc; color: #060; }
-  .lamp.unpowered { background: #f6d5d5; color: #a00; }
-  .bar { position: relative; width: 240px; height: 14px; margin: 4px 0 2px; border-radius: 7px;
-         background: linear-gradient(90deg, #f6d5d5, #eef 25%, #eef 75%, #f6d5d5); border: 1px solid #ccd; }
-  .bar .mid { position: absolute; left: 50%; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: #556; }
-  .bar .dot { position: absolute; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%;
-              background: #27c; border: 1px solid #fff; box-shadow: 0 0 3px #0008; transition: left .1s linear; }
-  .bar .dot.out { background: #e22; }
+  th, td { text-align: left; padding: .55em .7em; border-bottom: 1px solid var(--hairline); vertical-align: middle; }
+  thead th { color: var(--text-3); font-size: .72em; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; border-bottom-color: rgba(255, 255, 255, .14); }
+  tbody th { font-weight: 600; }
+  tbody tr { transition: background .15s; }
+  tbody tr:hover { background: rgba(255, 196, 23, .04); }
+  tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
+  td.num { font: 600 1.02em var(--font); font-variant-numeric: tabular-nums; text-align: right; }
+  .lamp {
+    display: inline-block; min-width: 5.4em; padding: .2em .7em; border-radius: 999px; text-align: center;
+    font-size: .76em; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+    background: var(--raised); color: var(--text-3); border: 1px solid var(--hairline);
+  }
+  .lamp.on { background: var(--honey); color: #1a1300; border-color: transparent; box-shadow: 0 0 12px rgba(255, 196, 23, .6); }
+  .lamp.off { background: var(--green-soft); color: var(--green); border-color: rgba(48, 209, 88, .25); }
+  .lamp.powered { background: var(--green-soft); color: var(--green); border-color: rgba(48, 209, 88, .25); }
+  .lamp.unpowered { background: var(--red-soft); color: var(--red); border-color: rgba(255, 69, 58, .3); }
+  .bar { position: relative; width: 220px; height: 8px; margin: 6px 0 4px; border-radius: 999px;
+         background: linear-gradient(90deg, rgba(255, 69, 58, .35), rgba(255, 255, 255, .08) 25%, rgba(255, 255, 255, .08) 75%, rgba(255, 69, 58, .35)); }
+  .bar .mid { position: absolute; left: 50%; top: -4px; bottom: -4px; width: 2px; margin-left: -1px; border-radius: 1px; background: rgba(255, 255, 255, .3); }
+  .bar .dot { position: absolute; top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%;
+              background: var(--honey); border: 2px solid #1a1300; box-shadow: 0 0 10px rgba(255, 196, 23, .7); transition: left .1s linear; }
+  .bar .dot.out { background: var(--red); box-shadow: 0 0 10px rgba(255, 69, 58, .8); }
   .bar .dot.none { display: none; }
-  .scale { display: flex; justify-content: space-between; width: 240px; font-size: .75em; color: #888; }
-  .tcp-values { display: flex; gap: 2em; flex-wrap: wrap; margin: .6em 0; }
-  .tcp-values b { font-variant-numeric: tabular-nums; font-size: 1.3em; }
-  .tcp-editor { display: flex; gap: .7em; flex-wrap: wrap; align-items: end; margin-top: 1em; }
-  .tcp-editor label { display: flex; flex-direction: column; gap: .2em; font-size: .9em; }
-  .tcp-editor input { width: 6.3em; }
-  .tcp-editor input#tcpName { width: 10em; }
-  img.camera { display: block; width: 100%; max-width: 640px; border-radius: 6px; background: #111; }
+  .scale { display: flex; justify-content: space-between; width: 220px; font-size: .7em; color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+  /* ---------- cameras ---------- */
+  .cameras { display: flex; flex-direction: column; gap: 1.1em; }
+  .cameras > div { min-width: 0; }
+  img.camera { display: block; width: 100%; max-width: 640px; border-radius: 16px; background: #000; border: 1px solid var(--hairline); }
   img.camera[hidden] { display: none; }
-  .cameras { display: flex; gap: 1em; flex-wrap: wrap; }
-  .cameras > div { flex: 1 1 320px; min-width: 0; }
-  .cameras h3 { margin: 0 0 .3em; font-size: 1em; }
-  #boardConfigText { display: block; width: 100%; box-sizing: border-box; margin-top: .6em; font: .9em/1.35 ui-monospace, Consolas, monospace; tab-size: 2; white-space: pre; }
+
+  /* ---------- TCP / board config ---------- */
+  .tcp-values { display: flex; gap: 1em 2.2em; flex-wrap: wrap; margin: .6em 0; color: var(--text-2); }
+  .tcp-values b { font: 600 1.45em var(--font); font-variant-numeric: tabular-nums; color: var(--text); letter-spacing: -.02em; }
+  .tcp-editor { display: flex; gap: .8em; flex-wrap: wrap; align-items: end; margin-top: 1em; }
+  .tcp-editor label { display: flex; flex-direction: column; gap: .3em; font-size: .84em; }
+  .tcp-editor input { width: 6.6em; }
+  .tcp-editor input#tcpName { width: 10em; }
+  #boardConfigText { display: block; width: 100%; margin-top: .7em; padding: .9em 1em; border-radius: 14px; background: rgba(0, 0, 0, .35);
+                     font: .88em/1.45 var(--mono); tab-size: 2; white-space: pre; resize: vertical; }
+
+  ::selection { background: rgba(255, 196, 23, .35); }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .14); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  @media (max-width: 640px) {
+    main { padding: .9em .7em 2em; }
+    .topbar-inner { padding: .6em .7em; }
+    .card { padding: 1.05em 1em; border-radius: 18px; }
+    .controls { width: 100%; }
+    .controls button { flex: 1 1 auto; }
+    .actions button { flex: 1 1 auto; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
-<div class="row">
-  <h1>Arm control</h1>
-  <button class="stop" onclick="stopArm()">STOP</button>
-  <button id="unlock" onclick="post('/api/unlock', {})" title="Enable the motors and re-arm plan execution after STOP or a fault">Unlock / re-arm</button>
-  <span id="conn" class="muted">connecting…</span>
-</div>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <svg viewBox="0 0 40 40" aria-hidden="true">
+        <defs><linearGradient id="honeyGrad" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffd23f"/><stop offset="1" stop-color="#ff9f0a"/></linearGradient></defs>
+        <path d="M20 2 35.6 11v18L20 38 4.4 29V11z" fill="url(#honeyGrad)"/>
+        <ellipse cx="14" cy="15" rx="4.6" ry="3" fill="#fff" fill-opacity=".75" transform="rotate(-30 14 15)"/>
+        <ellipse cx="26" cy="15" rx="4.6" ry="3" fill="#fff" fill-opacity=".75" transform="rotate(30 26 15)"/>
+        <ellipse cx="20" cy="22" rx="6" ry="8.5" fill="#16120a"/>
+        <path d="M14.4 19.5h11.2M14 23.5h12M15 27.5h10" stroke="#ffc417" stroke-width="2.2"/>
+      </svg>
+      <div><h1>NanoBee <span>Arm</span></h1><small>MKS TinyBee control</small></div>
+    </div>
+    <div class="controls">
+      <button id="runToggle" class="big run-stop" onclick="toggleRun()" title="Stop all motion">STOP</button>
+      <button id="motorsToggle" class="big" onclick="toggleMotors()" hidden title="Motor drivers">Motors</button>
+    </div>
+    <div class="pills" role="status" aria-live="polite">
+      <span class="pill"><span class="label">Link</span><b id="conn" class="muted">connecting…</b></span>
+      <span class="pill"><span class="label">State</span><b id="mstate">–</b></span>
+      <span class="pill"><span class="label">joint_states age</span><b id="age">–</b></span>
+      <span class="pill" id="executionStatusRow"><span class="label">Execution</span><b id="trajectoryStatus">–</b></span>
+    </div>
+  </div>
+</header>
+
+<main>
 <p id="msg" role="status" aria-live="polite"></p>
 
-<div class="card">
-  <h2 id="controllerTitle">Bridge</h2>
-  <div class="row">
-    <span>State: <b id="mstate">–</b></span>
-    <span>Limit pins: <b id="pins">–</b></span>
-    <span>Homing: <b id="homing">–</b></span>
-    <span id="executionStatusRow">Execution: <b id="trajectoryStatus">–</b></span>
+<div class="split">
+<section class="card" aria-labelledby="jointsTitle">
+  <h2 id="jointsTitle">Joint targets</h2>
+  <p class="hint">Set one target pose, preview it in RViz, then execute it. Choose joint units below; TCP angles remain in degrees.</p>
+  <div class="row" style="margin-bottom:.5em">
+    <label>Joint units <select id="jointUnits" onchange="setJointUnits(this.value)">
+      <option value="deg">Degrees (°)</option><option value="rad">Radians (rad)</option>
+    </select></label>
+    <label title="Percent of each joint's max_speed in the board's config.yaml">Jog speed <input id="speed" type="range" min="1" max="100" step="1" value="30"
+      oninput="speedChanged()"> <span id="speedLbl">30</span> %</label>
+    <span class="hint">Hold − / + to jog; release to stop. Jog moves directly, without collision checking.</span>
   </div>
-  <div class="row" id="motorsRow" style="margin-top:.6em">
-    <span>Motors: <b id="motorsState">–</b></span>
-    <button id="motorsEnable" onclick="setMotors(true)" title="Power the motor drivers (holds position)">Enable motors</button>
-    <button id="motorsDisable" onclick="setMotors(false)" title="Unpower the motor drivers: joints become free and the home reference is cleared">Disable motors</button>
+  <div class="table-scroll" role="region" aria-label="Joint targets and manual controls" tabindex="0">
+    <table>
+      <thead><tr><th scope="col">Joint</th><th scope="col" id="motorHeading">Motor</th><th scope="col" id="endstopHeading">Endstop</th><th scope="col" id="homingHeading">Homing</th><th scope="col" id="positionHeading">Position [°]</th><th scope="col">Position gauge</th><th scope="col">Jog</th><th scope="col" id="targetHeading">Target [°]</th><th scope="col" id="homeHeading">Home</th></tr></thead>
+      <tbody id="joints"></tbody>
+    </table>
   </div>
+  <div class="actions">
+    <button onclick="copyCurrentToPlan()">Use current angles</button>
+    <button class="direct-move" id="directButton" onclick="moveDirectly()" title="Send all targets directly to the arm, without a plan or collision checking">Move all to targets</button>
+  </div>
+  <div class="actions rviz" role="group" aria-label="RViz plan">
+    <span class="row-label">RViz</span>
+    <button class="primary" id="planButton" onclick="planJoints()">Preview plan</button>
+    <button class="primary" id="executeButton" onclick="executeJoints('joints')" disabled>Execute plan</button>
+  </div>
+  <p id="planStatus" class="muted" role="status" aria-live="polite"></p>
+  <p class="hint" id="executionHint">Planning checks joint limits and collisions. Review the RViz animation before executing.</p>
+</section>
+
+<section class="card">
+  <h2>Cameras</h2>
+  <div class="cameras">
+    <div>
+      <h3>USB camera</h3>
+      <p class="hint">Status: <span id="camStatus" class="muted">–</span></p>
+      <img id="cam" class="camera" alt="Live USB camera stream" hidden onerror="cameraStreamFailed('cam')">
+    </div>
+    <div>
+      <h3>Phone camera</h3>
+      <p class="hint">Status: <span id="cam2Status" class="muted">–</span></p>
+      <img id="cam2" class="camera" alt="Live phone camera stream" hidden onerror="cameraStreamFailed('cam2')">
+    </div>
+  </div>
+</section>
 </div>
 
-<div class="card" id="boardConfigCard" hidden>
-  <h2>Board settings (config.yaml)</h2>
+<section class="card" id="boardConfigCard" hidden>
+  <h2>Board settings</h2>
+  <p class="hint">NanoBee <code>config.yaml</code> — speeds, limits, homing and Wi-Fi of the TinyBee board.</p>
   <details id="boardConfigDetails" ontoggle="if (this.open && boardConfigText === null) loadBoardConfig()">
     <summary>Edit and send to the NanoBee board</summary>
-    <p class="muted hint">File: <code id="boardConfigPath">–</code>. <b>Send to board</b> saves the file and uploads it over USB;
+    <p class="hint">File: <code id="boardConfigPath">–</code>. <b>Send to board</b> saves the file and uploads it over USB;
       the board checks and applies it at once (it must be Idle; Wi-Fi changes after a board reboot). If the board rejects it, the file is left unchanged.</p>
     <textarea id="boardConfigText" spellcheck="false" rows="24" aria-label="config.yaml contents"
               oninput="boardConfigEdited()"></textarea>
-    <div class="row" style="margin-top:.6em">
+    <div class="row" style="margin-top:.8em">
       <button id="boardConfigSend" class="primary" onclick="sendBoardConfig()">Send to board</button>
       <button id="boardConfigReload" onclick="loadBoardConfig(true)">Reload from file</button>
       <span id="boardConfigStatus" class="muted" role="status" aria-live="polite"></span>
     </div>
   </details>
-</div>
+</section>
 
-<div class="card">
-  <h2>Cameras</h2>
-  <div class="cameras">
-    <div>
-      <h3>USB camera</h3>
-      <p class="muted hint">Status: <span id="camStatus" class="muted">–</span></p>
-      <img id="cam" class="camera" alt="Live USB camera stream" hidden onerror="cameraStreamFailed('cam')">
-    </div>
-    <div>
-      <h3>Phone camera</h3>
-      <p class="muted hint">Status: <span id="cam2Status" class="muted">–</span></p>
-      <img id="cam2" class="camera" alt="Live phone camera stream" hidden onerror="cameraStreamFailed('cam2')">
-    </div>
-  </div>
-</div>
-
-<div class="card" id="endstopsCard">
-  <h2>Endstops</h2>
-  <div class="row" id="endstops"><span class="muted">–</span></div>
-</div>
-
-<div class="card" aria-labelledby="jointsTitle">
-  <h2 id="jointsTitle">Joint targets</h2>
-  <p class="muted hint">Set one target pose, preview it in RViz, then execute it. Choose joint units below; TCP angles remain in degrees.</p>
-  <div class="row" style="margin-bottom:.5em">
-    <label>Joint units <select id="jointUnits" onchange="setJointUnits(this.value)">
-      <option value="deg">Degrees (°)</option><option value="rad">Radians (rad)</option>
-    </select></label>
-    <label>Jog speed <input id="speed" type="range" min="1" max="360" value="120"
-      oninput="speedChanged()"> <span id="speedLbl">120</span> <span id="speedUnit">°/s</span></label>
-    <span class="muted hint">Hold − / + to jog; release to stop. Jog moves directly, without collision checking.</span>
-  </div>
-  <div class="table-scroll" role="region" aria-label="Joint targets and manual controls" tabindex="0">
-    <table>
-      <thead><tr><th scope="col">Joint</th><th scope="col" id="motorHeading">Motor</th><th scope="col" id="positionHeading">Position [°]</th><th scope="col">Position gauge</th><th scope="col">Jog</th><th scope="col" id="targetHeading">Target [°]</th><th scope="col" id="homeHeading">Home</th></tr></thead>
-      <tbody id="joints"></tbody>
-    </table>
-  </div>
-  <p class="muted hint" id="age"></p>
-  <div class="row actions">
-    <button onclick="copyCurrentToPlan()">Use current angles</button>
-    <button class="primary" id="planButton" onclick="planJoints()">Preview plan</button>
-    <button class="primary" id="executeButton" onclick="executeJoints('joints')" disabled>Execute plan</button>
-    <button class="direct-move" id="directButton" onclick="moveDirectly()" title="Send all targets directly to the arm, without a plan or collision checking">Move all to targets</button>
-  </div>
-  <p id="planStatus" class="muted" role="status" aria-live="polite">Enter target angles; blank targets keep the current angle (fresh joint state required).</p>
-  <p class="muted hint" id="executionHint">Planning checks joint limits and collisions. Review the RViz animation before executing.</p>
-  <p class="muted hint" id="directHint">Move all to targets moves every joint at once, directly at the board's move speed — no collision checking, arrival is not confirmed.</p>
-</div>
-
-<div class="card">
+<section class="card">
   <h2>TCP position</h2>
-  <span class="muted" id="tcpFrames">world → tool0, origin (0, 0, 0) of tool0</span>
+  <span class="hint" id="tcpFrames">world → tool0, origin (0, 0, 0) of tool0</span>
   <p class="muted">Position and orientation in the reference frame:</p>
   <div class="tcp-values">
-    <span>X: <b id="tcpX">–</b> mm</span>
-    <span>Y: <b id="tcpY">–</b> mm</span>
-    <span>Z: <b id="tcpZ">–</b> mm</span>
+    <span>X <b id="tcpX">–</b> mm</span>
+    <span>Y <b id="tcpY">–</b> mm</span>
+    <span>Z <b id="tcpZ">–</b> mm</span>
   </div>
   <div class="tcp-values">
-    <span>Roll: <b id="tcpWorldRoll">–</b>°</span>
-    <span>Pitch: <b id="tcpWorldPitch">–</b>°</span>
-    <span>Yaw: <b id="tcpWorldYaw">–</b>°</span>
+    <span>Roll <b id="tcpWorldRoll">–</b>°</span>
+    <span>Pitch <b id="tcpWorldPitch">–</b>°</span>
+    <span>Yaw <b id="tcpWorldYaw">–</b>°</span>
   </div>
   <span class="muted" id="tcpStatus">Waiting for TF</span>
   <div class="row" style="margin-top:1em">
@@ -204,19 +349,19 @@
     <label>Yaw [°] <input id="tcpYaw" oninput="tcpDefinitionChanged()" type="number" step="0.1" value="0"></label>
     <button id="tcpSave" onclick="saveTcp()">Save and select</button>
   </div>
-  <p class="muted">Offsets and rotation are relative to tool0. Names: letters, numbers, _ or -.</p>
+  <p class="hint">Offsets and rotation are relative to tool0. Names: letters, numbers, _ or -.</p>
   </details>
-</div>
+</section>
 
-
-<div class="card">
+<section class="card">
   <h2>Gamepad</h2>
   <p id="padinfo" class="muted">–</p>
   <details><summary>Gamepad mapping</summary>
-    <p class="muted">Left stick X → joint1, left stick Y → joint2, right stick Y → joint3,
+    <p class="hint">Left stick X → joint1, left stick Y → joint2, right stick Y → joint3,
     right stick X → joint4, LB/RB → joint5, B → STOP.</p>
   </details>
-</div>
+</section>
+</main>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -252,7 +397,6 @@ let jointUnits = 'deg';
 // Canonical degrees match the HTTP contract. Cache rendered text so a unit-only
 // switch never repeatedly converts or rounds an unchanged physical target.
 const targetDegrees = new Map();
-let jogDegrees = {text: '120', degrees: 120};
 const displayAngle = degrees => jointUnits === 'rad' ? degrees * Math.PI / 180 : degrees;
 const apiAngle = value => jointUnits === 'rad' ? value * 180 / Math.PI : value;
 const angleSymbol = () => jointUnits === 'rad' ? ' rad' : '°';
@@ -271,8 +415,18 @@ function captureTarget(n) {
 }
 
 function speedChanged() {
-  jogDegrees = cachedDegrees($('speed'), jogDegrees);
-  $('speedLbl').textContent = Number($('speed').value).toFixed(jointUnits === 'rad' ? 4 : 0);
+  $('speedLbl').textContent = String(jogPercent());
+}
+
+function jogPercent() {
+  const value = Number($('speed').value);
+  return Number.isFinite(value) ? Math.min(100, Math.max(1, Math.round(value))) : 30;
+}
+
+// 100 % jog = the joint's max_speed from the board's config.yaml (bridge ~/joint_settings).
+function jogMaxSpeed(joint) {
+  const max = config.joint_settings?.[joint]?.max_speed_deg_s;
+  return Number.isFinite(max) && max > 0 ? max : (config.max_jog_speed || 360);
 }
 
 function renderJointPositions() {
@@ -293,15 +447,6 @@ function renderJointUnits(convertTargets = false) {
   const symbol = angleSymbol();
   $('positionHeading').textContent = `Position [${symbol.trim()}]`;
   $('targetHeading').textContent = `Target [${symbol.trim()}]`;
-  $('speedUnit').textContent = symbol.trim() + '/s';
-  const speed = $('speed');
-  speed.min = displayAngle(1);
-  speed.max = displayAngle(config.max_jog_speed || 360);
-  speed.step = 'any'; // Unit changes must not quantize the physical speed.
-  jogDegrees.degrees = Math.min(config.max_jog_speed || 360, Math.max(1, jogDegrees.degrees));
-  speed.value = displayAngle(jogDegrees.degrees);
-  jogDegrees.text = speed.value.trim();
-  $('speedLbl').textContent = Number(speed.value).toFixed(jointUnits === 'rad' ? 4 : 0);
   for (const n of Object.keys(config.joint_limits_deg || {})) {
     const input = $('target_' + n);
     if (!input) continue;
@@ -325,7 +470,6 @@ function setJointUnits(units) {
   if (!['deg', 'rad'].includes(units) || units === jointUnits) return;
   for (const n of Object.keys(config.joint_limits_deg || {}))
     if ($('target_' + n)) captureTarget(n);
-  jogDegrees = cachedDegrees($('speed'), jogDegrees);
   jointUnits = units;
   renderJointUnits(true);
 }
@@ -358,6 +502,11 @@ let planPollAfter = 0;
 let motorsEnabled = null;  // null = unknown (simulation, no or stale bridge status)
 let motorsPowered = null;
 let motorsPending = false;
+let armed = null;  // bridge ~/armed: false after STOP or a fault, null = unknown / simulation
+let runPending = false;
+let startGuardUntil = 0;  // a fast double click on STOP must not immediately START again
+
+function isStopped() { return !config.simulation && armed === false; }
 
 function show(text, cls) { const m = $('msg'); m.textContent = text; m.className = cls || ''; }
 
@@ -400,20 +549,27 @@ function freshTcpState() {
 function updatePlanButtons() {
   const sceneReady = config.scene_ready !== false;
   const jogActive = config.jog_active || !!jogTimer;
-  const executable = !jogActive && sceneReady && freshJointState() && config.execution_available && planId && planReady && !planPending && !executionPending;
+  const stopped = isStopped();
+  const executable = !stopped && !jogActive && sceneReady && freshJointState() && config.execution_available && planId && planReady && !planPending && !executionPending;
   $('executeButton').disabled = !executable || planKind !== 'joints';
   $('tcpExecuteButton').disabled = !executable || planKind !== 'tcp' || !freshTcpState();
   $('tcpCopyButton').disabled = !freshTcpState() || planPending || executionPending;
   $('tcpPlanButton').disabled = jogActive || !sceneReady || !freshTcpState() || planPending || executionPending;
   $('planButton').disabled = jogActive || !sceneReady || !connected || planPending || executionPending;
-  $('directButton').disabled = config.direct_motion_available === false || !connected || executionPending || motorsEnabled === false;
-  $('directButton').title = motorsEnabled === false ? 'Motors are disabled; enable them first'
+  $('directButton').disabled = stopped || config.direct_motion_available === false || !connected || executionPending || motorsEnabled === false;
+  $('directButton').title = stopped ? 'The arm is stopped; press START first'
+    : motorsEnabled === false ? 'Motors are disabled; enable them first'
     : 'Send all targets directly to the arm, without a plan or collision checking';
   for (const name of Object.keys(config.joint_limits_deg || {})) {
-    const disabled = !jogAvailable() || !sceneReady || !freshJointState() || executionPending || stopPending;
+    const disabled = stopped || !jogAvailable() || !sceneReady || !freshJointState() || executionPending || stopPending;
     for (const prefix of ['jogMinus_', 'jogPlus_']) {
       const button = $(prefix + name);
       if (button) button.disabled = disabled;
+    }
+    const homeButton = $('homeButton_' + name);
+    if (homeButton) {
+      homeButton.disabled = stopped || !connected || executionPending;
+      homeButton.title = stopped ? 'The arm is stopped; press START first' : `Home ${name} on its endstop`;
     }
   }
 }
@@ -471,30 +627,62 @@ function invalidatePlan(message) {
 
 async function stopArm() {
   stopPending = true;
+  if (!config.simulation) { armed = false; startGuardUntil = Date.now() + 1000; }
+  renderRun();
   await stopJog();
   invalidatePlan('Stopping…');
   const revision = planRevision;
   const result = await post('/api/stop', {}, true);
   stopPending = false;
   updatePlanButtons();
+  renderRun();
   if (revision === planRevision)
     planStatus(result?.ok ? 'Stopped.' : (result?.message || 'STOP failed.'), result?.ok ? 'warn' : 'bad');
 }
 
+async function startArm() {
+  if (!isStopped() || runPending || !connected || Date.now() < startGuardUntil) return;
+  runPending = true;
+  renderRun();
+  try {
+    const result = await post('/api/unlock', {});
+    if (result?.ok) armed = true;
+  } finally {
+    runPending = false;
+    renderRun();
+    updatePlanButtons();
+  }
+}
+
+function toggleRun() { return isStopped() ? startArm() : stopArm(); }
+
+function renderRun() {
+  const button = $('runToggle');
+  if (isStopped()) {
+    button.textContent = runPending ? 'Starting…' : 'START';
+    button.className = 'big run-start';
+    button.title = 'Enable the motors and allow motion again (jog, gamepad, moves, plans, homing)';
+    button.disabled = runPending || !connected || Date.now() < startGuardUntil;
+  } else {
+    button.textContent = 'STOP';
+    button.className = 'big run-stop';
+    button.title = config.simulation ? 'Stop all motion'
+      : 'Stop all motion; jog, gamepad, moves, plans and homing stay blocked until START';
+    button.disabled = false;
+  }
+}
+
 async function startJog(joint, dir) {
-  if (!jogAvailable() || executionPending || stopPending || config.scene_ready === false || !freshJointState()) return;
+  if (isStopped() || !jogAvailable() || executionPending || stopPending || config.scene_ready === false || !freshJointState()) return;
   const barrier = stopJog();
   const generation = jogGeneration;
   await barrier;
   if (generation !== jogGeneration || executionPending || stopPending) return;
   const send = () => {
     if (generation !== jogGeneration || jogPending) return;
-    jogDegrees = cachedDegrees($('speed'), jogDegrees);
-    if (jogDegrees.degrees != null) {
-      const request = post('/api/jog', {[joint]: dir * jogDegrees.degrees});
-      jogPending = request;
-      request.finally(() => { if (jogPending === request) jogPending = null; });
-    }
+    const request = post('/api/jog', {[joint]: dir * jogPercent() / 100 * jogMaxSpeed(joint)});
+    jogPending = request;
+    request.finally(() => { if (jogPending === request) jogPending = null; });
   };
   send();
   jogTimer = {id: setInterval(send, 100), joint};
@@ -575,7 +763,7 @@ function readTargets() {
 async function moveDirectly() {
   invalidatePlan('Direct movement selected; preview again before executing a plan.');
   const target = readTargets();
-  if (!target || !connected || executionPending || motorsEnabled === false) return;
+  if (!target || !connected || executionPending || motorsEnabled === false || isStopped()) return;
   stopJog();
   const request = post('/api/goto', target, true);
   const revision = planRevision;
@@ -614,7 +802,7 @@ async function requestPlan(path, target, kind) {
 }
 
 async function executeJoints(kind = 'joints') {
-  if (kind !== planKind || (kind === 'tcp' && !freshTcpState())) return;
+  if (kind !== planKind || (kind === 'tcp' && !freshTcpState()) || isStopped()) return;
   if (!planId || !planReady || !freshJointState() || !config.execution_available || planPending || executionPending) return;
   const id = planId;
   invalidatePlan('Executing plan…');
@@ -634,25 +822,36 @@ async function executeJoints(kind = 'joints') {
   }
 }
 
+function homingMode(n) {
+  const mode = config.joint_settings?.[n]?.homing;
+  return mode && mode !== 'none' ? mode : '';
+}
+
 function home(joint) {
-  if (confirm(`Home ${joint}? It moves slowly until it finds its endstop. Keep a hand on STOP.`)) {
+  if (isStopped()) return;
+  const mode = homingMode(joint);
+  if (confirm(`Home ${joint}${mode ? ` (${mode})` : ''}? It moves slowly until it finds its endstop. Keep a hand on STOP.`)) {
     stopJog();
     post('/api/home', {joint});
   }
 }
 
 function setZero(joint) {
-  if (confirm(`Set ${joint} position to 0° here (manual home)? The current position becomes the new zero; soft limits then apply from it.`)) {
+  if (confirm(`Set ${joint} current position to 0° (manual home)? Soft limits then apply from it.`)) {
     stopJog();
     post('/api/set_zero', {joint});
   }
 }
 
+// One button per joint: endstop homing (named after its mode) or, without homing, manual zero.
 function homeCell(n) {
-  const buttons = [];
-  if (config.home_joints.includes(n)) buttons.push(`<button aria-label="Home ${n}" onclick="home('${n}')">Home</button>`);
-  if (config.set_zero_available) buttons.push(`<button aria-label="Set ${n} position to 0" title="Manual home: current position becomes 0°" onclick="setZero('${n}')">Home set → 0</button>`);
-  return `<td>${buttons.join(' ') || '—'}</td>`;
+  if (config.home_joints.includes(n)) {
+    const mode = homingMode(n);
+    return `<td><button id="homeButton_${n}" aria-label="Home ${n}" onclick="home('${n}')">${mode ? 'Home ' + mode : 'Home'}</button></td>`;
+  }
+  if (config.set_zero_available)
+    return `<td><button aria-label="Set ${n} current position to 0" title="Manual home: the current position becomes 0°" onclick="setZero('${n}')">Current position is 0</button></td>`;
+  return '<td>—</td>';
 }
 
 function loadTcpEditor(tcp) {
@@ -743,7 +942,8 @@ async function deleteTcp() {
 }
 
 function buildRows(names) {
-  const key = JSON.stringify([names, config.home_joints, config.set_zero_available, config.joint_limits_deg, config.direct_motion_available, config.jog_available, motorsColumn()]);
+  const key = JSON.stringify([names, config.home_joints, config.set_zero_available, config.joint_limits_deg, config.direct_motion_available, config.jog_available, motorsColumn(), endstopColumn(), homingColumn(), config.endstops,
+    names.map(homingMode), names.map(jogMaxSpeed)]);
   if (key === rowsBuilt) return;
   const previous = Object.fromEntries(names.map(n => [n, $('target_' + n)?.value || '']));
   if (rowsBuilt) invalidatePlan('Robot configuration changed; check targets and preview again.');
@@ -751,12 +951,18 @@ function buildRows(names) {
   const homeColumn = config.home_joints.length > 0 || config.set_zero_available === true;
   $('homeHeading').hidden = !homeColumn;
   $('motorHeading').hidden = !motorsColumn();
+  $('endstopHeading').hidden = !endstopColumn();
+  $('homingHeading').hidden = !homingColumn();
+  const endstops = config.endstops || [];
+  const endstopCell = n => !endstopColumn() ? ''
+    : (endstops.includes(n) ? `<td><span class="lamp" id="endstop_${n}">–</span></td>` : '<td class="muted">—</td>');
+  const homingCell = n => homingColumn() ? `<td><span class="lamp" id="homed_${n}">–</span></td>` : '';
   $('joints').innerHTML = names.map(n => `
-    <tr><th scope="row">${n}</th>${motorsColumn() ? `<td><span class="lamp" id="motor_${n}">–</span></td>` : ''}<td class="num" id="pos_${n}">–</td>
+    <tr><th scope="row">${n}</th>${motorsColumn() ? `<td><span class="lamp" id="motor_${n}">–</span></td>` : ''}${endstopCell(n)}${homingCell(n)}<td class="num" id="pos_${n}">–</td>
       <td><div class="bar"><div class="mid"></div><div class="dot none" id="dot_${n}"></div></div>
           <div class="scale"><span id="scale_${n}">-${RANGE}°</span><span id="scaleZero_${n}">0°</span><span id="scaleMax_${n}">+${RANGE}°</span></div></td>
-      <td><button id="jogMinus_${n}" ${!jogAvailable() ? 'disabled' : ''} aria-label="Jog ${n} negative" onpointerdown="startJog('${n}',-1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',-1); }">−</button>
-          <button id="jogPlus_${n}" ${!jogAvailable() ? 'disabled' : ''} aria-label="Jog ${n} positive" onpointerdown="startJog('${n}',1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',1); }">+</button></td>
+      <td title="100 % jog = ${jogMaxSpeed(n).toFixed(1)} °/s"><button class="jog" id="jogMinus_${n}" ${!jogAvailable() ? 'disabled' : ''} aria-label="Jog ${n} negative" onpointerdown="startJog('${n}',-1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',-1); }">−</button>
+          <button class="jog" id="jogPlus_${n}" ${!jogAvailable() ? 'disabled' : ''} aria-label="Jog ${n} positive" onpointerdown="startJog('${n}',1)" onkeydown="if(!event.repeat && (event.key===' ' || event.key==='Enter')) { event.preventDefault(); startJog('${n}',1); }">+</button></td>
       <td><input class="target-input" aria-label="${n} target angle in degrees" type="number" step="any" min="${config.joint_limits_deg[n][0]}" max="${config.joint_limits_deg[n][1]}" id="target_${n}" oninput="planChanged()"></td>
       ${homeColumn ? homeCell(n) : ''}</tr>`).join('');
   for (const n of names) $('target_' + n).value = previous[n];
@@ -764,6 +970,59 @@ function buildRows(names) {
 }
 
 function motorsColumn() { return config.motors_control_available === true; }
+function endstopColumn() { return !config.simulation && (config.endstops || []).length > 0; }
+function homingColumn() { return !config.simulation && config.motors_control_available === true; }
+
+// Last homing_status text per joint ("joint1: homing started", "joint2: homed", ...).
+const homingMessages = {};
+let lastHomingStatus = null;
+
+function renderHoming(status) {
+  const text = status?.homing_status?.value;
+  if (typeof text === 'string' && text !== lastHomingStatus) {
+    lastHomingStatus = text;
+    const [subject, ...rest] = text.split(': ');
+    const detail = rest.join(': ');
+    if (detail) {
+      const joints = subject === 'all joints' ? (config.home_joints || []) : [subject];
+      for (const n of joints) homingMessages[n] = detail;
+    }
+  }
+  const homedEntry = status?.homed;
+  const homed = homedEntry && homedEntry.age < 2 && typeof homedEntry.value === 'string'
+    ? (homedEntry.value ? homedEntry.value.split(',') : []) : null;
+  const homingNow = /^Home/.test(status?.machine_state?.value || '');
+  for (const n of Object.keys(config.joint_limits_deg || {})) {
+    const lamp = $('homed_' + n);
+    if (!lamp) continue;
+    const message = homingMessages[n] || '';
+    lamp.title = message ? `${n}: ${message}` : '';
+    if (homingNow && message === 'homing started') {
+      lamp.textContent = 'homing…'; lamp.className = 'lamp on';
+    } else if (homed === null) {
+      lamp.textContent = '–'; lamp.className = 'lamp';
+      if (!message) lamp.title = 'No homing status from the bridge';
+    } else if (homed.includes(n)) {
+      lamp.textContent = 'homed'; lamp.className = 'lamp powered';
+    } else if (/failed/.test(message)) {
+      lamp.textContent = 'failed'; lamp.className = 'lamp unpowered';
+    } else {
+      lamp.textContent = 'not homed'; lamp.className = 'lamp';
+    }
+  }
+}
+
+function renderEndstops(status) {
+  const pins = status?.limit_switches ? status.limit_switches.value : null;
+  const pressed = pins ? pins.split(',') : [];
+  for (const n of config.endstops || []) {
+    const lamp = $('endstop_' + n);
+    if (!lamp) continue;
+    const isPressed = pressed.includes(n);
+    lamp.textContent = pins === null ? 'no data' : (isPressed ? 'PRESSED' : 'released');
+    lamp.className = pins === null ? 'lamp' : (isPressed ? 'lamp on' : 'lamp off');
+  }
+}
 
 function renderMotors(status) {
   const fresh = entry => entry && entry.age < 2 ? entry.value : null;
@@ -771,11 +1030,15 @@ function renderMotors(status) {
   const powered = motorsColumn() ? fresh(status?.motors_powered) : null;
   motorsEnabled = typeof enabled === 'boolean' ? enabled : null;
   motorsPowered = typeof powered === 'string' ? (powered ? powered.split(',') : []) : null;
-  $('motorsRow').hidden = !motorsColumn();
-  $('motorsState').textContent = motorsEnabled === null ? 'unknown' : (motorsEnabled ? 'ENABLED' : 'DISABLED');
-  $('motorsState').className = motorsEnabled === null ? 'warn' : (motorsEnabled ? 'ok' : 'bad');
-  $('motorsEnable').disabled = !connected || motorsPending || executionPending || motorsEnabled === true;
-  $('motorsDisable').disabled = !connected || motorsPending || executionPending || motorsEnabled === false;
+  const toggle = $('motorsToggle');
+  toggle.hidden = !motorsColumn();
+  toggle.disabled = !connected || motorsPending || executionPending || motorsEnabled === null;
+  toggle.innerHTML = '<span class="led"></span>' + (motorsPending ? 'Motors…'
+    : motorsEnabled === null ? 'Motors unknown' : (motorsEnabled ? 'Disable motors' : 'Enable motors'));
+  toggle.className = 'big ' + (motorsEnabled === null ? '' : (motorsEnabled ? 'motors-on' : 'motors-off'));
+  toggle.title = motorsEnabled === null ? 'No motor status from the bridge'
+    : (motorsEnabled ? 'Motors are ENABLED (holding). Click to disable them; joints become free.'
+      : 'Motors are DISABLED. Click to enable them.');
   for (const n of Object.keys(config.joint_limits_deg || {})) {
     const lamp = $('motor_' + n);
     if (!lamp) continue;
@@ -793,12 +1056,15 @@ function renderMotors(status) {
 
 async function setMotors(enable) {
   if (!connected || motorsPending || executionPending) return;
-  if (!enable && !confirm('Disable motors? Joints become free to move (they may drop under gravity) and the home reference is cleared.')) return;
   stopJog();
   motorsPending = true;
-  $('motorsEnable').disabled = $('motorsDisable').disabled = true;
+  $('motorsToggle').disabled = true;
   try { await post('/api/motors', {enable}); }
   finally { motorsPending = false; }
+}
+
+function toggleMotors() {
+  if (motorsEnabled !== null) return setMotors(!motorsEnabled);
 }
 
 // --- Board settings: NanoBeeDriver/config.yaml, sent through the bridge (~/push_config) ---
@@ -899,8 +1165,15 @@ async function poll() {
     // Dynamic joint buttons must exist before plan/TCP state updates touch them.
     // The first /state reply may arrive before any ROS joint state is available.
     const names = Object.keys(config.joint_limits_deg || {}).sort();
+    const armedValue = s.status?.armed?.value;
+    // Keep a local STOP until the bridge reports it, so a stale "armed" cannot flip the button back.
+    if (!config.simulation && !(armed === false && Date.now() < startGuardUntil))
+      armed = typeof armedValue === 'boolean' ? armedValue : null;
     buildRows(names);
     renderMotors(s.status);
+    renderEndstops(s.status);
+    renderHoming(s.status);
+    renderRun();
     renderBoardConfig();
     if (!tcpControlsPending && sequence > tcpPollAfter) tcpAwaitingState = false;
     updateTcpControls();
@@ -910,7 +1183,7 @@ async function poll() {
       ? 'Plan preview only; execution unavailable. Review the RViz animation. Move all to targets does not use collision checking.'
       : (config.simulation
         ? 'Planning checks joint limits and collisions. Review the RViz animation before executing in the simulator.'
-        : `Executes on the REAL ARM at ${Math.round((config.velocity_scaling || 0) * 100)}% speed. Review the RViz animation, keep the area clear and power cut-off within reach; STOP is not an emergency stop.`);
+        : '');
     $('tcpExecutionHint').textContent = $('executionHint').textContent;
     if (revision === planRevision && !planPending && sequence > planPollAfter) {
       if (planId) {
@@ -927,15 +1200,11 @@ async function poll() {
     }
     updatePlanButtons();
     $('tcpTargetFrame').textContent = `Target: ${config.selected_tcp} origin in ${config.reference_frame} [mm].`;
-    $('controllerTitle').textContent = config.simulation ? 'Simulation' : 'Bridge';
-    $('unlock').hidden = !!config.simulation;
-    $('directButton').hidden = $('directHint').hidden = config.direct_motion_available === false;
-    $('endstopsCard').hidden = !!config.simulation;
-    jogDegrees = cachedDegrees($('speed'), jogDegrees);
+    $('directButton').hidden = config.direct_motion_available === false;
     $('conn').textContent = 'connected'; $('conn').className = 'ok';
     renderJointUnits();
-    $('age').textContent = s.joints_age == null ? 'no joint_states yet'
-      : `joint_states age ${s.joints_age.toFixed(2)} s`;
+    $('age').textContent = s.joints_age == null ? 'no data' : `${s.joints_age.toFixed(2)} s`;
+    $('age').className = s.joints_age == null || s.joints_age > 2 ? 'warn' : 'ok';
     $('tcpFrames').textContent = `${config.reference_frame} → ${config.selected_tcp} (${config.tcp_frame})`;
     const tcp = s.tcp;
     const tcpFresh = tcp && tcp.frame === config.tcp_frame && tcp.age < 2
@@ -953,20 +1222,10 @@ async function poll() {
     const ms = st('machine_state');
     $('mstate').textContent = ms;
     $('mstate').className = /Alarm/.test(ms) ? 'bad' : (ms === 'Idle' ? 'ok' : 'warn');
-    const pins = s.status.limit_switches ? s.status.limit_switches.value : null;
-    $('pins').textContent = pins === null ? '–' : (pins || 'none');
-    const es = config.endstops || [];
-    const pressed = pins ? pins.split(',') : [];
-    $('endstops').innerHTML = es.length === 0 ? '<span class="muted">none configured</span>'
-      : es.map(j => {
-          const cls = pins === null ? '' : (pressed.includes(j) ? 'on' : 'off');
-          const txt = pins === null ? 'no data' : (pressed.includes(j) ? 'PRESSED' : 'released');
-          return `<span>${j}: <span class="lamp ${cls}">${txt}</span></span>`;
-        }).join('');
-    $('homing').textContent = st('homing_status');
     $('executionStatusRow').hidden = !!config.simulation && !config.demo_target_mm;
     const ts = st('trajectory_status');
     $('trajectoryStatus').textContent = ts;
+    $('trajectoryStatus').title = ts;
     $('trajectoryStatus').className = /^(disarmed|abort)/.test(ts) ? 'bad' : '';
   } catch (e) {
     if (sequence < appliedPoll) return;
@@ -974,6 +1233,7 @@ async function poll() {
     connected = false;
     $('conn').textContent = 'disconnected'; $('conn').className = 'bad';
     renderMotors({});
+    renderRun();
     renderBoardConfig();
     stopJog();
     invalidatePlan('Connection lost; reconnect and preview again.');
@@ -995,6 +1255,12 @@ function padLoop() {
            || pads.find(p => !/vjoy/i.test(p.id)) || pads[0];
   if (!pad) {
     $('padinfo').textContent = 'No gamepad detected – press a button on it while this page is focused.';
+  } else if (isStopped()) {
+    $('padinfo').textContent = `${pad.id}: the arm is stopped — press START to use the gamepad.`;
+    if (padActive) {
+      post('/api/joy', {axes: pad.axes.map(() => 0), buttons: pad.buttons.map(() => 0)}, true);
+      padActive = false;
+    }
   } else {
     $('padinfo').textContent = `${pad.id} → /joy (mapping: ${pad.mapping || 'non-standard!'})`;
     const axes = pad.axes.map(a => Math.round(a * 1000) / 1000);

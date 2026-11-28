@@ -14,7 +14,15 @@ Topics:
   pub  ~/motors_powered    std_msgs/String         comma-separated joints whose driver is powered
                                                    (an enabled joint may be idle-disabled)
   pub  ~/homing_status     std_msgs/String         (latched) homing progress/result
+  pub  ~/homed             std_msgs/String         comma-separated referenced joints (homed or
+                                                   zeroed; board H:)
+  pub  ~/joint_settings    std_msgs/String         (latched) JSON per joint from the board settings:
+                                                   {"joint1": {"homing": "center",
+                                                   "max_speed_deg_s": 45.0}, ...}; homing is
+                                                   "none" while homing.enabled is false
   pub  ~/trajectory_status std_msgs/String         (latched) armed/executing/result/disarmed
+  pub  ~/armed             std_msgs/Bool           (latched) false after STOP or a fault: all
+                                                   motion is refused until ~/unlock
   sub  joint_command       sensor_msgs/JointState  move to absolute positions (firmware M)
   sub  joint_trajectory    trajectory_msgs/JointTrajectory  timed points (firmware T segments)
   sub  jog                 sensor_msgs/JointState  velocity [rad/s] per joint; keep publishing,
@@ -25,8 +33,9 @@ Services:
   ~/home             home every joint with joints.jointN.homing != none (firmware H)
   ~/home_<joint>     home one joint (refused with a reason if the board has no homing for it)
   ~/stop             decelerate to a stop, drop queued motion, abort homing and trajectory goals;
-                     trajectory execution stays disarmed until ~/unlock
-  ~/unlock           enable the motors and re-arm trajectory execution
+                     the bridge stays disarmed until ~/unlock: jog, joint_command,
+                     joint_trajectory, homing and trajectory goals are all refused
+  ~/unlock           enable the motors and re-arm all motion (START)
   ~/motors           std_srvs/SetBool: enable / disable the motor drivers (disable = free to move
                      by hand; the board then forgets its home reference)
   ~/set_zero         joints that are not homed: current position becomes 0
@@ -36,12 +45,13 @@ Services:
   ~/push_config      upload the file at parameter config_path (NanoBeeDriver/config.yaml) to the
                      board (Idle only), then reload the settings
 joint_command, joint_trajectory, jog and homing are refused while a trajectory goal is active;
-a trajectory goal is refused while any of them is active. After a STOP, jog stays inhibited until
+a trajectory goal is refused while any of them is active. After ~/unlock, jog stays inhibited until
 a zero-velocity jog message (or a pause of at least jog_timeout): a held stick never resumes motion.
 With enable_on_start (default true) the bridge enables the motor drivers on connect, so a restart
 (or a board reset when the serial port opens) leaves the arm held instead of limp.
 """
 
+import json
 import math
 import os
 import threading
@@ -213,9 +223,14 @@ class NanoBeeBridge(Node):
         self._pins_pub = self.create_publisher(String, '~/limit_switches', 10)
         self._enabled_pub = self.create_publisher(Bool, '~/motors_enabled', 10)
         self._powered_pub = self.create_publisher(String, '~/motors_powered', 10)
+        self._homed_pub = self.create_publisher(String, '~/homed', 10)
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._joint_settings_pub = self.create_publisher(String, '~/joint_settings', latched)
+        self._publish_joint_settings()
         self._homing_pub = self.create_publisher(String, '~/homing_status', latched)
         self._traj_status_pub = self.create_publisher(String, '~/trajectory_status', latched)
+        self._armed_pub = self.create_publisher(Bool, '~/armed', latched)
+        self._set_armed(self._armed)
         self.create_subscription(JointState, 'joint_command', self._on_joint_command, 10)
         self.create_subscription(JointTrajectory, 'joint_trajectory', self._on_trajectory, 10)
         self.create_subscription(JointState, 'jog', self._on_jog, 10)
@@ -286,6 +301,15 @@ class NanoBeeBridge(Node):
         if not settings.blend:
             self.get_logger().warn(
                 'motion.blend is off on the board: trajectories stop at every point')
+        if hasattr(self, '_joint_settings_pub'):
+            self._publish_joint_settings()
+
+    def _publish_joint_settings(self):
+        s = self._settings
+        data = {name: {'homing': s.homing[j] if s.homing_enabled else 'none',
+                       'max_speed_deg_s': s.max_speed[j] / s.steps_per_deg[j]}
+                for j, name in enumerate(self._joints)}
+        self._joint_settings_pub.publish(String(data=json.dumps(data)))
 
     def _raw_write(self, data):
         with self._write_lock:
@@ -430,7 +454,7 @@ class NanoBeeBridge(Node):
             self._status_time = time.monotonic()
             self._status_seq += 1
             self._status_cond.notify_all()
-        if settings is None or not hasattr(self, '_js_pub'):
+        if settings is None or not hasattr(self, '_homed_pub'):
             return
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -443,6 +467,8 @@ class NanoBeeBridge(Node):
         self._enabled_pub.publish(Bool(data=bool(status['enabled'])))
         powered = [self._joints[j] for j, on in enumerate(status['powered'][:NUM_JOINTS]) if on]
         self._powered_pub.publish(String(data=','.join(powered)))
+        homed = [self._joints[j] for j, on in enumerate(status['referenced'][:NUM_JOINTS]) if on]
+        self._homed_pub.publish(String(data=','.join(homed)))
 
     def _fresh_status(self):
         with self._status_cond:
@@ -455,7 +481,9 @@ class NanoBeeBridge(Node):
 
     def _busy(self, what):
         reason = None
-        if self._trajectory_active:
+        if not self._armed:
+            reason = 'stopped (press START / ~/unlock)'
+        elif self._trajectory_active:
             reason = 'a trajectory goal is active'
         elif self._state == 'Home':
             reason = 'homing'
@@ -570,7 +598,9 @@ class NanoBeeBridge(Node):
             gap = now - self._jog_msg_time
             self._jog_msg_time = now
             refused = None
-            if self._trajectory_active:
+            if not self._armed:
+                refused = 'stopped (press START / ~/unlock)'
+            elif self._trajectory_active:
                 refused = 'a trajectory goal is active'
             elif self._state == 'Home':
                 refused = 'homing'
@@ -601,7 +631,7 @@ class NanoBeeBridge(Node):
             with self._jog_lock:
                 vel = list(self._jog_vel)
                 fresh = now - self._jog_stamp < self._jog_timeout
-            if not fresh or not any(vel):
+            if not fresh or not any(vel) or not self._armed:
                 if self._jogging:
                     self._jogging = False
                     ok, reply = self._send(jog_line([0.0] * NUM_JOINTS))
@@ -637,7 +667,9 @@ class NanoBeeBridge(Node):
         name = 'all joints' if joint is None else self._joints[joint]
         with self._arb_lock:
             reason = None
-            if joint is not None and self._settings.homing[joint] == 'none':
+            if not self._armed:
+                reason = 'the arm is stopped; press START (~/unlock) first'
+            elif joint is not None and self._settings.homing[joint] == 'none':
                 reason = (f'{name} has no homing on the board (joints.joint{joint + 1}.homing: '
                           'none); send the config to the board first')
             elif self._trajectory_active:
@@ -666,7 +698,7 @@ class NanoBeeBridge(Node):
     def _on_stop(self, _req, res):
         ok, reply = self._halt('STOP requested')
         res.success = ok
-        res.message = ('Stopping; trajectory execution disarmed until unlock' if ok
+        res.message = ('Stopped; all motion disarmed until START' if ok
                        else f'Stop command failed ({reply}); sent emergency halt')
         return res
 
@@ -674,7 +706,7 @@ class NanoBeeBridge(Node):
         """Smooth stop on the board, abort everything, disarm trajectory execution."""
         with self._arb_lock:
             self._generation += 1
-            self._armed = False
+            self._set_armed(False)
             self._jogging = False
             self._last_cmd_steps = None
             with self._jog_lock:
@@ -697,12 +729,12 @@ class NanoBeeBridge(Node):
                 return res
             ok, reply = self._send('E 1')
             if ok:
-                self._armed = True
+                self._set_armed(True)
         if not ok:
             res.success, res.message = False, f'Enable failed: {reply}; execution stays disarmed'
             return res
         self._traj_status('armed: re-armed by ~/unlock')
-        res.success, res.message = True, 'Motors enabled; trajectory execution armed'
+        res.success, res.message = True, 'Started: motors enabled, motion armed'
         return res
 
     def _on_motors(self, req, res):
@@ -814,10 +846,15 @@ class NanoBeeBridge(Node):
 
     @staticmethod
     def _disarm_text(reason):
-        return f'disarmed: {reason}; check the arm, then Unlock / re-arm (~/unlock)'
+        return f'disarmed: {reason}; check the arm, then START (~/unlock)'
+
+    def _set_armed(self, armed):
+        self._armed = armed
+        if hasattr(self, '_armed_pub'):
+            self._armed_pub.publish(Bool(data=armed))
 
     def _disarm(self, reason):
-        self._armed = False
+        self._set_armed(False)
         if hasattr(self, '_traj_status_pub'):
             self._traj_status(self._disarm_text(reason))
 
@@ -831,7 +868,7 @@ class NanoBeeBridge(Node):
         if self._limits is None:
             return 'robot_description not set (joint limits unknown)'
         if not self._armed:
-            return 'execution disarmed after STOP or a fault; Unlock / re-arm (~/unlock) first'
+            return 'disarmed after STOP or a fault; press START (~/unlock) first'
         if self._state == 'Home':
             return 'homing in progress'
         if self._jogging or self._jog_requested():
@@ -868,7 +905,7 @@ class NanoBeeBridge(Node):
                 goal_handle.canceled()
             else:
                 goal_handle.abort()
-            note = '' if self._armed else '; execution disarmed until Unlock / re-arm'
+            note = '' if self._armed else '; disarmed until START'
             self._traj_status(f'{outcome}: {message}{note}')
             return result
         finally:

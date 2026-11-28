@@ -8,7 +8,7 @@
 | `arm_sim` | ament_python | Joint simulator for panel direct/jog/gamepad commands; publishes `/joint_states` |
 | `arm_nanobee_bridge` | ament_python | `nanobee_bridge` node; `nanobee_protocol.py` and `trajectory.py` (pure, unit tested) |
 | `arm_start` | ament_cmake | `launch/arm.launch.py`, `config/nanobee_bridge.yaml`, `scripts/attach_board.sh`, `scripts/attach_camera.sh`, `scripts/camera_driver.sh` |
-| `arm_web` | ament_python | `web_viewer` node: web page (default http://localhost:8080) with live state, STOP/unlock, hold-to-jog, go-to, endstop homing and browser gamepad forwarding |
+| `arm_web` | ament_python | `web_viewer` node: web page (default http://localhost:8080) with live state, STOP/START and motors toggle, hold-to-jog, go-to, endstop homing and browser gamepad forwarding |
 | `arm_gazebo` | ament_python | Gazebo tabletop simulation, trajectory adapter, and matching MoveIt collision scene |
 | `arm_teleop` | ament_python | `joy_teleop` node: `/joy` → `/jog` velocities in simple simulation and on hardware |
 | `arm_camera` | ament_python | `camera_node`: USB camera (OpenCV/V4L2) → `/camera/image_raw` (bgr8) and `/camera/image_raw/compressed` (JPEG); started unless `camera:=false` (which also disables `camera2`). A second instance `camera2` reads the phone camera from a stream URL (`camera2_device`, default `http://{windows_host}:8081/stream.mjpg`) → `/camera2/image_raw[/compressed]` (`camera2_link`); started unless `camera2:=false` |
@@ -41,11 +41,14 @@ Source: [nanobee_bridge.py](../src/arm_nanobee_bridge/arm_nanobee_bridge/nanobee
 | `~/home` (srv) | `std_srvs/Trigger` | `H`: home every joint with `joints.jointN.homing` ≠ `none` (board must be `Idle`; refused while jogging, streaming or a trajectory goal is active) |
 | `~/home_<joint>` (srv) | `std_srvs/Trigger` | `H j`: home one joint; refused with a reason if the board has `homing: none` for it (joint1 `center`: switch found from both sides, the middle becomes `home_offset_deg`; joint2 `edge`: from the top toward +90° until the switch) |
 | `~/homing_status` (pub, latched) | `std_msgs/String` | Homing progress / result text |
-| `~/stop` (srv) | `std_srvs/Trigger` | `S`: decelerate to a stop, drop queued motion, cancel homing; aborts the trajectory goal and jog. If `S` is not acknowledged the instant halt `!` is sent. Disarms trajectory execution until `~/unlock` |
-| `~/unlock` (srv) | `std_srvs/Trigger` | `E 1` (enable the motors) and re-arm trajectory execution after STOP or a fault; fails (stays disarmed) if the board does not answer `ok`. Refused while a trajectory goal is active. Never homes |
+| `~/homed` (pub) | `std_msgs/String` | Comma-separated referenced (homed or zeroed) joints (board `H:`); web **Homing** column |
+| `~/joint_settings` (pub, latched) | `std_msgs/String` | JSON per joint from the board settings: `{"jointN": {"homing": "center"/"edge"/"none", "max_speed_deg_s": …}}`; web jog % and Home buttons |
+| `~/stop` (srv) | `std_srvs/Trigger` | `S`: decelerate to a stop, drop queued motion, cancel homing; aborts the trajectory goal and jog. If `S` is not acknowledged the instant halt `!` is sent. Disarms all motion (trajectory, joint_command, jog, homing) until `~/unlock` (web **START**) |
+| `~/armed` (pub, latched) | `std_msgs/Bool` | `false` after STOP or a fault (all motion refused), `true` after `~/unlock` |
+| `~/unlock` (srv) | `std_srvs/Trigger` | Web **START**: `E 1` (enable the motors) and re-arm all motion after STOP or a fault; fails (stays disarmed) if the board does not answer `ok`. Refused while a trajectory goal is active. Never homes |
 | `~/motors` (srv) | `std_srvs/SetBool` | `E 1` / `E 0`: enable / disable the drivers. Disabled joints can be moved by hand; the board then forgets the home reference |
 | `~/set_zero` (srv) | `std_srvs/Trigger` | `Z`: joints that are not referenced (homed or zeroed) get position 0; referenced joints keep theirs. Board must be `Idle` |
-| `~/set_zero_<joint>` (srv) | `std_srvs/Trigger` | Manual homing (web **Home set → 0**): `Z` with the joint's current position set to 0, from any position and whether homed or not; other joints keep their positions. The joint becomes referenced (soft limits apply from the new zero). Board must be `Idle`, no goal/jog/stream active; result on `~/homing_status` |
+| `~/set_zero_<joint>` (srv) | `std_srvs/Trigger` | Manual homing (web **Current position is 0**): `Z` with the joint's current position set to 0, from any position and whether homed or not; other joints keep their positions. The joint becomes referenced (soft limits apply from the new zero). Board must be `Idle`, no goal/jog/stream active; result on `~/homing_status` |
 | `~/reload_settings` (srv) | `std_srvs/Trigger` | Read the board settings again (`SETTINGS?`) after changing its config.yaml |
 | `~/push_config` (srv) | `std_srvs/Trigger` | Upload the file at parameter `config_path` (`arm.launch.py`: `NanoBee/NanoBeeDriver/config.yaml`) with `CONFIG`…`END`, then reload the settings. Board must be `Idle`, no goal/jog active; the firmware validates the file and answers `err ...` if it rejects it. Changed homing modes need a bridge restart (home services) |
 
@@ -109,14 +112,14 @@ while serial reading, status and STOP keep running.
 * **Cancel / STOP.** Cancel or `~/stop` (also during jog / go-to / homing) → `S`: the board
   decelerates to a stop, drops its queue and cancels homing; the bridge stops
   sending segments. If `S` is not acknowledged, `!` (instant halt, no deceleration – steps may be
-  lost) is sent. The goal ends canceled (cancel) or aborted (`~/stop`). Execution stays
-  **disarmed** until the operator presses **Unlock / re-arm** (`~/unlock`); the bridge starts
-  armed. STOP drops the current jog velocity: jog stays inhibited until a zero-velocity jog
+  lost) is sent. The goal ends canceled (cancel) or aborted (`~/stop`). All motion (trajectory goals, `joint_command`, `joint_trajectory`, jog/gamepad, homing) stays
+  **disarmed** until the operator presses **START** (`~/unlock`); the bridge starts
+  armed and publishes the state on latched `~/armed`. STOP drops the current jog velocity: jog stays inhibited until a zero-velocity jog
   message (gamepad release) or a pause of at least `jog_timeout` in jog messages, so a stick or
-  button held through STOP does not restart motion. The same latch applies to a non-zero jog
+  button held through STOP does not restart motion after START. The same latch applies to a non-zero jog
   received while a trajectory goal is active or homing runs (refused messages still count as the
   jog stream), so a stick held through a goal cancel/fault does not jog afterwards.
-  Jog/go-to/homing need no Unlock afterwards.
+  Setting zero, disabling motors, board settings and plan previews stay allowed while stopped.
 * **Limits.** Open loop: the board reports commanded steps; intermediate positions are not
   checked against a path tolerance. The simulator's STOP does not latch/disarm.
 
@@ -172,7 +175,7 @@ Endstop pins are fixed in [NanoBee/src/config.h](../NanoBee/src/config.h): joint
 (5V unused). Normally-closed reads low when released, so the pin is active-high
 (`endstops.active_low: false`); a broken wire then reads as pressed (fail-safe). If you wire C + NO
 instead, set `endstops.active_low: true`, push the config (see [04](04-nanobee-setup.md)) and call
-`~/reload_settings`. Check the switch on the web page: the "Endstops" card shows a red **PRESSED**
+`~/reload_settings`. Check the switch on the web page: the **Endstop** column of the joint table shows a red **PRESSED**
 lamp only while it is pressed (joints listed in the `home_joints` param of `web_viewer`,
 default `['joint1', 'joint2']`).
 
@@ -181,8 +184,10 @@ default `['joint1', 'joint2']`).
 `ros2 launch arm_start arm.launch.py use_hardware:=true`, then open
 http://localhost:8080 (from Windows too).
 
-- STOP / Unlock / re-arm, hold − / + to jog a joint, one shared "Target" column for planning or direct movement; **Joint units** selects degrees (default) or radians for joint positions, targets, gauges and jog speed, "Home" for `home_joints` and, on hardware, **Home set → 0** in every joint row (manual homing: after confirmation the joint's current position becomes 0°, via bridge `~/set_zero_<joint>`). On hardware the Bridge card also shows the latched trajectory execution status (armed / executing / result / disarmed); **Unlock / re-arm** enables the motors and re-arms plan execution after STOP or a fault. On hardware the Bridge card also shows **Motors: ENABLED / DISABLED** with **Enable motors** / **Disable motors** buttons (disable asks for confirmation: joints go free and the home reference is cleared), and the joint table has a **Motor** column per joint: `ON` (powered), `sleep` (power-save: `joints.jointN.idle_disable` switched the driver off after `motion.idle_timeout_ms` at rest; wakes on the next move), `OFF` (drivers disabled) or `–` (no fresh status).
-- Changing joint units preserves physical targets, jog speed and an unchanged ready plan. TCP angles remain in degrees; the HTTP API still uses degrees and degrees/s.
+- Dark, honey-yellow layout: a sticky top bar holds the two main buttons and status pills (link, board state, joint_states age, execution); then **Joint targets** (left) next to **Cameras** (right; stacked on narrow screens), **Board settings**, **TCP position** and **Gamepad**.
+- **STOP / START** (one button): STOP halts everything and latches; while stopped, jog, gamepad, Move all to targets, Execute plan and Home are blocked (in the page and in `web_viewer`/bridge) until **START**, which enables the motors and re-arms motion after STOP or a fault (also needed after a board restart). In Gazebo the button is always STOP (no latch). **Disable / Enable motors** (hardware only, no confirmation; disabling frees the joints and clears the home reference).
+- Hold − / + to jog a joint; **Jog speed** is a percentage (1–100 %) of each joint's `max_speed` from the board config.yaml (bridge `~/joint_settings`; in Gazebo of `max_jog_speed`), still capped by the bridge `max_jog_speed`. One shared "Target" column for planning or direct movement; **Joint units** selects degrees (default) or radians for joint positions, targets and gauges. On hardware each row has one Home button: **Home center** / **Home edge** for joints whose board `homing` is not `none` (bridge `~/home_<joint>`), otherwise **Current position is 0** (manual homing: after confirmation the joint's current position becomes 0°, via `~/set_zero_<joint>`). The hardware joint table also has a **Homing** column (`homed`, `homing…`, `failed`, `not homed`), an **Endstop** column (`PRESSED` / `released` for joints with a switch) and a **Motor** column per joint: `ON` (powered), `sleep` (power-save: `joints.jointN.idle_disable` switched the driver off after `motion.idle_timeout_ms` at rest; wakes on the next move), `OFF` (drivers disabled) or `–` (no fresh status).
+- Changing joint units preserves physical targets and an unchanged ready plan. TCP angles remain in degrees; the HTTP API still uses degrees and degrees/s.
 - "Position gauge" bar per joint: −180° … 0 … +180° (−π … 0 … +π rad), the dot shows the current position (red and pinned to the end if outside).
 - TCP position: the panel reads the reference frame → selected TCP transform from TF
   and displays that TCP origin (X/Y/Z in millimetres, angles in degrees). It marks the
@@ -261,7 +266,7 @@ executed once within 120 seconds; execution is rejected if the current joints
 have moved from the plan's start. STOP cancels the action and stops the controller.
 The panel plans at 10 % velocity/acceleration scaling on hardware and 30 % in simulation
 (`web_viewer` parameters `max_velocity_scaling`/`max_acceleration_scaling`, set by the launch).
-**Move all to targets** (next to Preview / Execute; hidden in the Gazebo demo) uses the same
+**Move all to targets** (next to Use current angles; Preview / Execute plan are in the separate RViz row; hidden in the Gazebo demo) uses the same
 complete target pose as planning and sends it directly via `/api/goto` → `joint_command`:
 all joints move together at the board's move speed, with no collision checking; a sent
 command does not confirm arrival. It is disabled while the motors are reported disabled.
@@ -278,7 +283,7 @@ them against the final CAD before relying on collision checks with hardware.
 Execution on hardware goes through the bridge's trajectory action (see
 [Trajectory execution on hardware](#trajectory-execution-on-hardware)); it has been
 tested only offline, not on the physical arm. After STOP or a fault the bridge rejects
-goals until **Unlock / re-arm**.
+goals (and all other motion) until **START**.
 
 TCP position planning uses `/api/plan_tcp` with a configured `tcp_name` and finite
 `x_mm`, `y_mm`, `z_mm` in `reference_frame` (default `world`). It constrains the

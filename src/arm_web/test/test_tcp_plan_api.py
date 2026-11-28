@@ -233,6 +233,30 @@ def test_motors_rejected_in_simulation_and_during_execution(viewer):
     assert viewer._motors_client.requests == []
 
 
+def test_stopped_bridge_refuses_motion_until_start(viewer):
+    viewer.simulation = False
+    viewer.jog_available = True
+    viewer.max_jog_speed = 30.
+    viewer._joint_state = lambda values, field: (values, field)
+    published = []
+    viewer._jog_pub = viewer._cmd_pub = viewer._joy_pub = SimpleNamespace(publish=published.append)
+    calls = []
+    viewer.call = lambda name, timeout=5.0: (calls.append(name), (True, 'ok'))[1]
+    viewer.store.update_status('armed', False)
+    for result in (viewer.jog({'joint1': 5}), viewer.goto({'joint1': 5}),
+                   viewer.joy([1.0], [0]), viewer.home('joint1'),
+                   viewer.execute({'plan_id': 'x'})):
+        assert result == (False, 'The arm is stopped; press START first.')
+    assert published == [] and calls == []
+    assert viewer.jog({'joint1': 0})[0]  # releasing a jog is always allowed
+    viewer.store.update_status('armed', True)
+    assert viewer.goto({'joint1': 5})[0]
+    assert viewer.home('joint1')[0] and calls == ['home_joint1']
+    viewer.simulation = True
+    viewer.store.update_status('armed', False)
+    assert not viewer.stopped()
+
+
 class PushConfigClient:
     srv_name = '/nanobee_bridge/push_config'
 

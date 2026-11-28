@@ -17,7 +17,7 @@ function element(id) {
   });
   return elements.get(id);
 }
-element('speed').value = '120';
+element('speed').value = '30';
 const requests = [];
 let pendingFetch = null;
 const context = vm.createContext({
@@ -34,7 +34,8 @@ const context = vm.createContext({
 vm.runInContext(script.replace('setInterval(poll, 200);\npoll();', ''), context);
 const run = code => vm.runInContext(code, context);
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-10, `${a} != ${b}`);
-run(`config = {joint_limits_deg: {joint1: [-180, 180], joint2: [-90, 90]}, home_joints: [], max_jog_speed: 360, execution_available: true, tcps: []};
+run(`config = {joint_limits_deg: {joint1: [-180, 180], joint2: [-90, 90]}, home_joints: [], max_jog_speed: 360, execution_available: true, tcps: [],
+  joint_settings: {joint1: {homing: 'center', max_speed_deg_s: 45}}};
   connected = true; latestJoints = {joint1: {position_deg: -30}, joint2: {position_deg: 0}};
   latestJointsAge = 0; latestJointsReceived = Date.now();`);
 function targets(a, b) {
@@ -63,9 +64,6 @@ async function main() {
   assert.equal(element('target_joint1')['aria-label'], 'joint1 target angle in radians');
   assert.equal(element('pos_joint1').textContent, (-Math.PI / 6).toFixed(4));
   assert.match(element('scale_joint1').textContent, /-3.1416 rad/);
-  assert.equal(element('speedUnit').textContent, 'rad/s');
-  close(Number(element('speed').value), 2 * Math.PI / 3);
-  close(Number(element('speed').max), 2 * Math.PI);
   // Exact configured endpoints and near-limit user input.
   targets(Math.PI, -Math.PI / 2);
   close(read().joint1, 180); close(read().joint2, -90);
@@ -118,7 +116,8 @@ async function main() {
   targets(-0.3, ''); run('renderJointUnits()');
   assert.equal(element('target_joint1').value, '-0.3');
   assert.equal(element('target_joint2').value, '');
-  // All motion payloads remain degrees / degrees per second.
+  // All motion payloads remain degrees / degrees per second; jog speed is a percentage of the
+  // joint's board max_speed (joint_settings), falling back to max_jog_speed.
   for (const unit of ['deg', 'rad']) {
     units(unit); run('copyCurrentToPlan()');
     await run('moveDirectly()');
@@ -126,18 +125,18 @@ async function main() {
     await run('planJoints()');
     assert.deepEqual(requests.at(-1), {url: '/api/plan', body: {joint1: -30, joint2: 0}});
     await run('startJog("joint1", -1)');
-    assert.deepEqual(requests.at(-1), {url: '/api/jog', body: {joint1: -120}});
+    close(requests.at(-1).body.joint1, -13.5);
     units(unit === 'deg' ? 'rad' : 'deg');
     await run('startJog("joint1", 1)');
-    assert.deepEqual(requests.at(-1), {url: '/api/jog', body: {joint1: 120}});
+    close(requests.at(-1).body.joint1, 13.5);
     await run('stopJog()'); assert.equal(requests.at(-1).body.joint1, 0);
   }
-  // User-edited radian speed preserves physical value across repeated switching.
-  units('rad'); element('speed').value = '1.2345'; run('speedChanged()');
-  const physicalSpeed = 1.2345 * 180 / Math.PI;
-  for (let i = 0; i < 100; i++) { units('deg'); units('rad'); }
-  await run('startJog("joint2", 1)'); close(requests.at(-1).body.joint2, physicalSpeed);
+  element('speed').value = '50'; run('speedChanged()');
+  assert.equal(element('speedLbl').textContent, '50');
+  for (let i = 0; i < 10; i++) { units('deg'); units('rad'); }
+  await run('startJog("joint2", 1)'); close(requests.at(-1).body.joint2, 180);
   await run('stopJog()');
+  element('speed').value = '30';
   // A unit switch during in-flight planning does not discard the response.
   let resolvePlan;
   pendingFetch = () => new Promise(resolve => { resolvePlan = resolve; });
@@ -168,12 +167,13 @@ async function main() {
   responses[2]({ok: true, json: async () => snapshot}); await pollReady;
   assert.equal(run('planReady'), false); assert.equal(run('planId'), null);
   pendingFetch = null;
-  // Manual homing: every row gets "Home set → 0" on hardware; it posts the joint name.
+  // One button per joint: "Home <mode>" with board homing, else "Current position is 0".
   run(`config = {...config, home_joints: ['joint1'], set_zero_available: true}; buildRows(['joint1', 'joint2'])`);
   const rows = element('joints').innerHTML;
-  assert.match(rows, /setZero\('joint1'\)">Home set → 0/);
-  assert.match(rows, /setZero\('joint2'\)">Home set → 0/);
-  assert.match(rows, /home\('joint1'\)/); assert.doesNotMatch(rows, /home\('joint2'\)/);
+  assert.match(rows, /home\('joint1'\)">Home center</);
+  assert.doesNotMatch(rows, /setZero\('joint1'\)/);
+  assert.match(rows, /setZero\('joint2'\)">Current position is 0</);
+  assert.doesNotMatch(rows, /home\('joint2'\)/);
   assert.equal(element('homeHeading').hidden, false);
   ready(); await run(`setZero('joint2')`);
   assert.deepEqual(requests.at(-1), {url: '/api/set_zero', body: {joint: 'joint2'}});

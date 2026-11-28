@@ -11,8 +11,10 @@ POST /api/goto      {"joint1": deg, ...}         absolute move -> joint_command
 POST /api/home      {"joint": "joint1"}          endstop homing of one joint
 POST /api/set_zero  {"joint": "joint1"}          manual homing: current position of the joint
                                                  becomes 0 (NanoBee bridge only)
-POST /api/stop      {}                           abort everything
-POST /api/unlock    {}                           enable the motors and re-arm execution;
+POST /api/stop      {}                           abort everything; on the NanoBee bridge all motion
+                                                 (jog, gamepad, goto, home, execute) is then refused
+                                                 until /api/unlock
+POST /api/unlock    {}                           START: enable the motors and re-arm all motion;
                                                  fails unless the bridge confirms it
 POST /api/motors    {"enable": true|false}       enable / disable the motor drivers (bridge ~/motors)
 GET  /api/board_config                           {"yaml": "...", "path": "..."} from board_config_path
@@ -68,8 +70,11 @@ STATUS_TOPICS = {
     'trajectory_status': String,
     'motors_enabled': Bool,
     'motors_powered': String,
+    'homed': String,
+    'armed': Bool,
 }
-LATCHED_STATUS = ('homing_status', 'trajectory_status')
+LATCHED_STATUS = ('homing_status', 'trajectory_status', 'armed')
+STOPPED_MESSAGE = 'The arm is stopped; press START first.'
 
 PLAN_ERRORS = {
     MoveItErrorCodes.FAILURE: 'Planning failed; inspect MoveIt logs for details.',
@@ -278,6 +283,9 @@ class WebViewer(Node):
             self.create_subscription(
                 msg_type, f'{bridge_ns}/{key}',
                 lambda m, k=key: self.store.update_status(k, m.data), qos)
+        self.joint_settings = {}
+        self.create_subscription(
+            String, f'{bridge_ns}/joint_settings', self._on_joint_settings, latched)
 
         self._jog_pub = self.create_publisher(JointState, 'jog', 10)
         self._cmd_pub = self.create_publisher(JointState, 'joint_command', 10)
@@ -291,7 +299,9 @@ class WebViewer(Node):
             str(self.declare_parameter('board_config_path', '').value or ''))
         self._board_config_lock = threading.Lock()
         self._push_config_client = self.create_client(Trigger, f'{bridge_ns}/push_config')
-        for joint in self.home_joints:
+        # Which joints can home comes from the board settings at runtime, so every joint gets
+        # a client; the bridge refuses joints whose homing is none.
+        for joint in ([] if self.simulation else set(self.home_joints) | set(self.joint_limits)):
             self._trigger_clients[f'home_{joint}'] = self.create_client(
                 Trigger, f'{bridge_ns}/home_{joint}')
         self.set_zero_available = not self.simulation
@@ -300,12 +310,40 @@ class WebViewer(Node):
                 self._trigger_clients[f'set_zero_{joint}'] = self.create_client(
                     Trigger, f'{bridge_ns}/set_zero_{joint}')
 
+    def _on_joint_settings(self, msg):
+        try:
+            data = json.loads(msg.data)
+            self.joint_settings = {
+                str(name): {'homing': str(values.get('homing', 'none')),
+                            'max_speed_deg_s': float(values['max_speed_deg_s'])}
+                for name, values in data.items()
+                if math.isfinite(float(values['max_speed_deg_s']))
+                and float(values['max_speed_deg_s']) > 0}
+        except (ValueError, TypeError, KeyError, AttributeError) as exc:
+            self.get_logger().warn(f'Ignoring invalid joint_settings: {exc}')
+
+    def active_home_joints(self):
+        """Joints with endstop homing: from the board settings when known, else home_joints."""
+        if getattr(self, 'simulation', False):
+            return []
+        settings = getattr(self, 'joint_settings', {})
+        if settings:
+            return [n for n in self.joint_limits if settings.get(n, {}).get('homing', 'none') != 'none']
+        return list(getattr(self, 'home_joints', []))
+
+    def jog_limit(self, joint):
+        """deg/s for 100 % jog: the board's joints.max_speed when known, else max_jog_speed."""
+        settings = getattr(self, 'joint_settings', {}).get(joint)
+        return settings['max_speed_deg_s'] if settings else self.max_jog_speed
+
     def config(self):
         tcp_config = self.tcps.snapshot()
+        home_joints = self.active_home_joints()
         return {
-            'home_joints': self.home_joints,
+            'home_joints': home_joints,
             'set_zero_available': self.set_zero_available,
-            'endstops': list(self.home_joints),
+            'endstops': home_joints,
+            'joint_settings': getattr(self, 'joint_settings', {}),
             'max_jog_speed': self.max_jog_speed,
             'simulation': self.simulation,
             'execution_available': True,
@@ -427,12 +465,14 @@ class WebViewer(Node):
     def jog(self, values):
         if not getattr(self, 'jog_available', getattr(self, 'direct_motion_available', True)):
             return False, 'Jog is unavailable.'
-        limit = self.max_jog_speed
         if not isinstance(values, dict) or any(
                 name not in self.joint_limits or not math.isfinite(float(value))
                 for name, value in values.items()):
             return False, 'Jog requires known joints and finite velocities.'
-        values = {k: max(-limit, min(limit, float(v))) for k, v in values.items()}
+        values = {k: max(-self.jog_limit(k), min(self.jog_limit(k), float(v)))
+                  for k, v in values.items()}
+        if any(values.values()) and self.stopped():
+            return False, STOPPED_MESSAGE
         if getattr(self, 'require_scene_ready', False):
             with self._plan_state_lock:
                 if self._execution_pending or self._plan_status['state'] == 'executing':
@@ -455,6 +495,8 @@ class WebViewer(Node):
             return False, 'Gazebo demo uses previewed plans; direct movement is unavailable.'
         if not values:
             return False, 'no joints given'
+        if self.stopped():
+            return False, STOPPED_MESSAGE
         self._invalidate_plan()
         self._cmd_pub.publish(self._joint_state(values, 'position'))
         return True, 'sent'
@@ -661,6 +703,8 @@ class WebViewer(Node):
             return False, 'Release Jog and preview again before executing.'
         if not getattr(self, 'scene_ready', True):
             return False, 'Waiting for the Gazebo tabletop collision scene; preview again.'
+        if self.stopped():
+            return False, STOPPED_MESSAGE
         plan_id = body.get('plan_id')
         with self._plan_state_lock:
             record = self._plan_record
@@ -768,14 +812,30 @@ class WebViewer(Node):
     def joy(self, axes, buttons):
         if not getattr(self, 'direct_motion_available', True):
             return False, 'Gazebo demo uses previewed plans; gamepad motion is unavailable.'
+        moving = any(abs(float(a)) > 0.1 for a in axes) or any(int(b) for b in buttons)
+        if moving and self.stopped():
+            return False, STOPPED_MESSAGE
         msg = Joy()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.axes = [float(a) for a in axes]
         msg.buttons = [int(b) for b in buttons]
-        if any(abs(value) > 0.1 for value in msg.axes) or any(msg.buttons):
+        if moving:
             self._invalidate_plan()
         self._joy_pub.publish(msg)
         return True, 'ok'
+
+    def stopped(self):
+        """True while the NanoBee bridge reports it is disarmed (after STOP or a fault)."""
+        if getattr(self, 'simulation', False) or not hasattr(self, 'store'):
+            return False
+        armed = self.store.snapshot()['status'].get('armed')
+        return armed is not None and armed['value'] is False
+
+    def home(self, joint):
+        if self.stopped():
+            return False, STOPPED_MESSAGE
+        self._invalidate_plan()
+        return self.call(f'home_{joint}', timeout=5.0)
 
     def call(self, name, timeout=5.0):
         client = self._trigger_clients.get(name)
@@ -981,8 +1041,7 @@ def make_handler(node, page_path):
             if path == '/api/tcp/delete':
                 return node.delete_tcp(body)
             if path == '/api/home':
-                node._invalidate_plan()
-                return node.call(f"home_{body.get('joint', '')}", timeout=5.0)
+                return node.home(body.get('joint', ''))
             if path == '/api/set_zero':
                 node._invalidate_plan()
                 return node.call(f"set_zero_{body.get('joint', '')}", timeout=5.0)

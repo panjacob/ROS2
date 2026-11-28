@@ -346,9 +346,46 @@ def test_jog_held_through_stop_needs_release(rig):
     moving = [line for line in rig.fake.lines[count:]
               if line.startswith('J ') and line != 'J 0.0 0.0 0.0 0.0 0.0']
     assert moving == []
+    # Stopped: even a released-and-pressed jog stays refused until START.
+    rig.bridge._on_jog(JointState(name=['joint1'], velocity=[0.0]))
+    rig.bridge._on_jog(msg)
+    time.sleep(0.1)
+    assert not rig.bridge._jogging
+    assert call(rig.bridge._on_unlock).success
+    # The stick held through START must be released first.
+    rig.bridge._on_jog(msg)
+    time.sleep(0.1)
+    assert not rig.bridge._jogging
     rig.bridge._on_jog(JointState(name=['joint1'], velocity=[0.0]))
     rig.bridge._on_jog(msg)
     wait_for(lambda: rig.bridge._jogging)
+
+
+def test_stop_refuses_all_motion_until_unlock(rig):
+    from rclpy.qos import DurabilityPolicy, QoSProfile
+    from std_msgs.msg import Bool
+    armed = []
+    latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+    rig.node.create_subscription(Bool, '/nanobee_bridge/armed',
+                                 lambda m: armed.append(m.data), latched)
+    wait_for(lambda: armed and armed[-1])
+    assert call(rig.bridge._on_stop).success
+    wait_for(lambda: not armed[-1])
+    count = len(rig.fake.lines)
+    rig.bridge._on_joint_command(JointState(name=['joint1'], position=[0.5]))
+    res = rig.bridge._on_home(None, Trigger.Response())
+    assert not res.success and 'START' in res.message
+    rig.bridge._on_jog(JointState(name=['joint1'], velocity=[0.3]))
+    time.sleep(0.1)
+    sent = rig.fake.lines[count:]
+    assert not any(line.startswith(('M', 'H', 'T')) for line in sent)
+    assert not any(line.startswith('J ') and line != 'J 0.0 0.0 0.0 0.0 0.0' for line in sent)
+    # Non-motion services still work while stopped.
+    assert rig.bridge._on_motors(SetBool.Request(data=False), SetBool.Response()).success
+    assert call(rig.bridge._on_unlock).success
+    wait_for(lambda: armed[-1])
+    rig.bridge._on_joint_command(JointState(name=['joint1'], position=[0.5]))
+    wait_for(lambda: any(line.startswith('M') for line in rig.fake.lines[count:]))
 
 
 def test_jog_refused_during_goal(rig):

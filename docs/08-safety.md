@@ -12,7 +12,7 @@ Even a small stepper arm with 20:1 gearboxes can pinch fingers, break parts and 
 3. **Home after every power loss, E-stop, board restart, motor disable or crash.** Positions are
    open-loop; after lost steps the reported position is wrong. A realtime halt (`!`), a
    trajectory abort or a hit endstop/soft limit always means the position may be lost: verify
-   it (or re-home / `~/set_zero`) **before** pressing **Unlock / re-arm**. `~/unlock` only sends
+   it (or re-home / `~/set_zero`) **before** pressing **START**. `~/unlock` only sends
    `E 1` (motors on) and re-arms the bridge; it never homes automatically.
 4. Keep NanoBee soft limits (`joints.soft_limits`, `joints.jointN.min_deg`/`max_deg`) enabled. They
    are enforced only for joints referenced by homing or `Z`; set them slightly inside the
@@ -34,7 +34,7 @@ Even a small stepper arm with 20:1 gearboxes can pinch fingers, break parts and 
 11. MoveIt **Execute plan** on hardware (bridge trajectory action) has only been tested offline.
     For the first runs keep the panel's 10 % planning speed, review the RViz preview, stand at
     the E-stop and start with short moves. STOP/cancel/faults (`S` smooth stop; realtime `!`
-    halt if `S` is not acknowledged) disarm execution until **Unlock / re-arm**; check the arm
+    halt if `S` is not acknowledged) disarm all motion until **START** (web page); check the arm
     and re-home if position may be lost before re-arming (rule 3). MoveIt's execution-time
     monitoring usually cancels a too-slow trajectory, which also disarms. The bridge checks
     only the final position (open-loop steps), not the path. Software STOP does not cut motor

@@ -32,7 +32,7 @@ function makeElement(id = '') {
 
 for (const match of markup.matchAll(/\bid="([^"]+)"/g))
   elements.set(match[1], makeElement(match[1]));
-elements.get('speed').value = '120';
+elements.get('speed').value = '30';
 const element = id => elements.get(id) || null;
 assert.equal(element('jogPlus_joint1'), null);
 
@@ -73,7 +73,9 @@ async function main() {
   assert.ok(element('target_joint1'));
   assert.equal(element('jogPlus_joint1').disabled, true);
   assert.equal(element('planButton').disabled, true);
-  assert.equal(element('motorsRow').hidden, true);
+  assert.equal(element('motorsToggle').hidden, true);
+  assert.equal(element('endstopHeading').hidden, true);
+  assert.equal(element('runToggle').textContent, 'STOP');
   assert.equal(element('motorHeading').hidden, true);
   assert.equal(element('motor_joint1'), null);
   assert.equal(element('directButton').hidden, true);
@@ -90,7 +92,11 @@ async function main() {
   assert.equal(element('jogPlus_joint1').disabled, false);
   assert.equal(element('tcpPlanButton').disabled, false);
   assert.equal(element('directButton').disabled, true);
-  assert.equal(Number(element('speed').max), 120);
+  assert.match(markup, /id="speed" type="range" min="1" max="100"/);
+  assert.equal(element('age').textContent, '0.00 s');
+  await run('startJog("joint1", 1)');
+  assert.deepEqual(requests.pop(), {url: '/api/jog', body: {joint1: 36}}); // 30 % of 120 °/s
+  await run('stopJog()'); requests.pop();
 
   // A model change also updates controls before every new row exists.
   state.config.joint_limits_deg.joint6 = [-90, 90];
@@ -116,13 +122,12 @@ async function main() {
   state.config.motors_control_available = true;
   state.status = {motors_enabled: {value: true, age: 0}, motors_powered: {value: 'joint1,joint3', age: 0}};
   await run('poll()');
-  assert.equal(element('motorsRow').hidden, false);
+  assert.equal(element('motorsToggle').hidden, false);
   assert.equal(element('motorHeading').hidden, false);
-  assert.equal(element('motorsState').textContent, 'ENABLED');
+  assert.ok(element('motorsToggle').innerHTML.includes('Disable motors'));
   assert.equal(element('motor_joint1').textContent, 'ON');
   assert.equal(element('motor_joint2').textContent, 'sleep');
-  assert.equal(element('motorsEnable').disabled, true);
-  assert.equal(element('motorsDisable').disabled, false);
+  assert.equal(element('motorsToggle').disabled, false);
   assert.equal(element('directButton').hidden, false);
   assert.equal(element('directButton').disabled, false);
   element('target_joint1').value = '10';
@@ -130,22 +135,67 @@ async function main() {
   assert.equal(requests.at(-1).url, '/api/goto');
   assert.equal(Object.keys(requests.at(-1).body).length, 6);
   assert.equal(requests.at(-1).body.joint1, 10);
-  await run('setMotors(false)');
+  await run('toggleMotors()');
   assert.deepEqual(requests.at(-1), {url: '/api/motors', body: {enable: false}});
   state.status.motors_enabled.value = false;
   state.status.motors_powered.value = '';
   await run('poll()');
-  assert.equal(element('motorsState').textContent, 'DISABLED');
+  assert.ok(element('motorsToggle').innerHTML.includes('Enable motors'));
   assert.equal(element('motor_joint1').textContent, 'OFF');
-  assert.equal(element('motorsEnable').disabled, false);
-  assert.equal(element('motorsDisable').disabled, true);
+  assert.equal(element('motorsToggle').className, 'big motors-off');
   assert.equal(element('directButton').disabled, true);
-  await run('setMotors(true)');
+  await run('toggleMotors()');
   assert.deepEqual(requests.at(-1), {url: '/api/motors', body: {enable: true}});
   state.status.motors_enabled.age = 5;
   await run('poll()');
-  assert.equal(element('motorsState').textContent, 'unknown');
+  assert.ok(element('motorsToggle').innerHTML.includes('Motors unknown'));
+  assert.equal(element('motorsToggle').disabled, true);
   assert.equal(element('motor_joint1').textContent, '–');
+
+  // Endstops live in the joint table; STOP latches until START (bridge ~/armed).
+  state.config.endstops = ['joint1', 'joint2'];
+  state.status = {motors_enabled: {value: true, age: 0}, motors_powered: {value: '', age: 0},
+                  limit_switches: {value: 'joint2', age: 0}, armed: {value: true, age: 0}};
+  await run('poll()');
+  assert.equal(element('endstopHeading').hidden, false);
+  assert.equal(element('endstop_joint1').textContent, 'released');
+  assert.equal(element('endstop_joint2').textContent, 'PRESSED');
+  assert.equal(element('endstop_joint2').className, 'lamp on');
+  assert.equal(element('endstop_joint3'), null);
+  // Per-joint homing status lives in the joint table (bridge ~/homed + ~/homing_status).
+  assert.equal(element('homingHeading').hidden, false);
+  state.status.homed = {value: 'joint1', age: 0};
+  state.status.homing_status = {value: 'joint2: homing failed: no switch', age: 1};
+  await run('poll()');
+  assert.equal(element('homed_joint1').textContent, 'homed');
+  assert.equal(element('homed_joint2').textContent, 'failed');
+  assert.equal(element('homed_joint3').textContent, 'not homed');
+  delete state.status.homed;
+  delete state.status.homing_status;
+  assert.equal(element('runToggle').textContent, 'STOP');
+  assert.equal(element('jogPlus_joint1').disabled, false);
+  await run('toggleRun()');
+  assert.equal(requests.at(-1).url, '/api/stop');
+  assert.equal(element('runToggle').textContent, 'START');
+  assert.equal(element('runToggle').disabled, true, 'a double click on STOP must not START');
+  state.status.armed = {value: false, age: 3};
+  run('startGuardUntil = 0');
+  await run('poll()');
+  assert.equal(element('runToggle').textContent, 'START');
+  assert.equal(element('runToggle').className, 'big run-start');
+  assert.equal(element('runToggle').disabled, false);
+  assert.equal(element('jogPlus_joint1').disabled, true);
+  assert.equal(element('directButton').disabled, true);
+  const before = requests.length;
+  await run("startJog('joint1', 1)");
+  await run('moveDirectly()');
+  assert.equal(requests.length, before, 'no motion request while stopped');
+  await run('toggleRun()');
+  assert.equal(requests.at(-1).url, '/api/unlock');
+  state.status.armed = {value: true, age: 0};
+  await run('poll()');
+  assert.equal(element('runToggle').textContent, 'STOP');
+  assert.equal(element('jogPlus_joint1').disabled, false);
   console.log('PASS: initial empty DOM, delayed ROS state, new rows and HTTP reconnect');
 }
 
